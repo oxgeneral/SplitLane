@@ -7,6 +7,7 @@ enum RouteKind: String, Codable, CaseIterable, Identifiable, Sendable {
     case direct, vpn, vpnApp, amnezia, wireguard, socks5, http, https
 
     var id: Self { self }
+    var isProxy: Bool { self == .socks5 || self == .http || self == .https }
     var title: String {
         switch self {
         case .direct: "Напрямую"
@@ -26,6 +27,7 @@ struct Route: Codable, Hashable, Sendable {
     var target = ""
     var port = ""
     var interface: String?
+    var proxyCredentialID: UUID?
 
     var proxyEndpoint: NWEndpoint? {
         let host = target.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -40,11 +42,12 @@ struct Route: Codable, Hashable, Sendable {
     }
 
     var isValid: Bool {
+        guard proxyCredentialID == nil || kind.isProxy else { return false }
         switch kind {
-        case .direct, .vpn, .vpnApp: !target.isEmpty
-        case .amnezia: target.isEmpty && port.isEmpty && interface == nil
-        case .wireguard: target.hasPrefix("/") && !(interface ?? "").isEmpty
-        case .socks5, .http, .https: proxyEndpoint != nil
+        case .direct, .vpn, .vpnApp: return !target.isEmpty
+        case .amnezia: return target.isEmpty && port.isEmpty && interface == nil
+        case .wireguard: return target.hasPrefix("/") && !(interface ?? "").isEmpty
+        case .socks5, .http, .https: return proxyEndpoint != nil
         }
     }
 }
@@ -55,6 +58,14 @@ struct AppRule: Identifiable, Codable, Equatable, Sendable {
     let path: String
     let signingID: String
     var route = Route()
+    var blockUDP: Bool?
+    var useTUN: Bool?
+
+    // Older signed configurations blocked UDP for every assigned app.
+    var blocksUDPInExtension: Bool { blockUDP != false }
+    // Proxy mode enables full isolation (TUN + WebRTC/UDP blocking) unless explicitly opted out.
+    var blocksUDPInProxyMode: Bool { blockUDP != false }
+    var usesTUNInProxyMode: Bool { useTUN != false }
 
     static func match(signingID: String, executablePath: String?, rules: [AppRule]) -> AppRule? {
         if let executablePath {
@@ -121,7 +132,7 @@ func vpnApplicationProviderIDs(bundleID: String) -> Set<String> {
 }
 
 private func vpnProviders(in url: URL) -> Set<String> {
-    let folders = ["Contents/PlugIns", "Contents/Library/SystemExtensions"]
+    let folders = ["Contents/PlugIns", "Contents/Library/SystemExtensions", "WrappedBundle/PlugIns"]
     return Set(folders.flatMap { folder in
         let contents = try? FileManager.default.contentsOfDirectory(at: url.appendingPathComponent(folder),
                                                                     includingPropertiesForKeys: nil)
@@ -132,14 +143,34 @@ private func vpnProviders(in url: URL) -> Set<String> {
     })
 }
 
-func vpnApplicationInterface(bundleID: String) -> String? {
+func vpnApplicationInterfaces(bundleID: String) -> Set<String> {
     let providers = vpnApplicationProviderIDs(bundleID: bundleID)
-    guard !providers.isEmpty else { return nil }
-    let interfaces = Set(vpnServices().compactMap { service -> String? in
+    guard !providers.isEmpty else { return [] }
+    return Set(vpnServices().compactMap { service -> String? in
         guard let provider = service.provider, providers.contains(provider) else { return nil }
         return vpnInterface(profileID: service.choice.id)
     })
+}
+
+func vpnApplicationInterface(bundleID: String) -> String? {
+    let interfaces = vpnApplicationInterfaces(bundleID: bundleID)
     return interfaces.count == 1 ? interfaces.first : nil
+}
+
+func canonicalAppBundlePath(for path: String, name: String) throws -> String {
+    let url = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+    guard Bundle(url: url)?.executableURL != nil else {
+        throw TunConfiguration.failure("Не удалось найти приложение \(name).")
+    }
+    let resolved = url.withUnsafeFileSystemRepresentation { fileSystemPath -> String in
+        guard let fileSystemPath, let real = realpath(fileSystemPath, nil) else { return url.path }
+        defer { free(real) }
+        return String(cString: real)
+    }
+    guard resolved.hasPrefix("/"), resolved.hasSuffix(".app") else {
+        throw TunConfiguration.failure("Не удалось определить пакет приложения \(name).")
+    }
+    return resolved
 }
 
 func vpnInterface(profileID: String) -> String? {
@@ -173,7 +204,7 @@ func tcpParameters(for route: Route, interfaces: [NWInterface]) -> NWParameters?
         if route.kind == .direct, interface.type != .wifi && interface.type != .wiredEthernet { return nil }
         parameters.requiredInterface = interface
     case .socks5, .http, .https:
-        guard let endpoint = route.proxyEndpoint else { return nil }
+        guard route.proxyCredentialID == nil, let endpoint = route.proxyEndpoint else { return nil }
         var proxy: ProxyConfiguration
         if route.kind == .socks5 {
             proxy = ProxyConfiguration(socksv5Proxy: endpoint)
@@ -192,6 +223,12 @@ func tcpParameters(for route: Route, interfaces: [NWInterface]) -> NWParameters?
 enum RuleConfiguration {
     static let key = "rules"
     static let defaultsKey = "appRules"
+
+    static func validateLocalUDPPolicy(_ rules: [AppRule]) throws {
+        if let app = rules.first(where: { $0.blockUDP == true }) {
+            throw TunConfiguration.failure("Блокировка UDP для «\(app.name)» требует сборки с сетевым расширением.")
+        }
+    }
 
     static func encode(_ rules: [AppRule]) throws -> Data {
         try validate(rules)

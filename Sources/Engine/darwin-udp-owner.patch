@@ -1,0 +1,133 @@
+--- a/common/process/searcher_darwin_shared.go
++++ b/common/process/searcher_darwin_shared.go
+@@ -82,7 +82,7 @@
+ 	destination = normalizeDarwinAddrPort(destination)
+ 	var lastOwner *adapter.ConnectionOwner
+ 	for attempt := range 2 {
+-		snapshot, fromCache, err := f.loadSnapshot(networkName, attempt > 0)
++		snapshot, fromCache, err := f.loadSnapshot(networkName, attempt >= 0)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+@@ -176,6 +176,13 @@
+ 		entry, ok := parseDarwinConnectionEntry(buf[inp:so], buf[so:so+structSize-darwinXsocketOffset])
+ 		if ok {
+ 			entries = append(entries, entry)
++			// An unconnected dual-stack UDP socket bound to :: can send in either family.
++			if itemSize == structSize && buf[inp+darwinXinpcbVFlag]&0x3 == 0x3 &&
++				[16]byte(buf[inp+darwinXinpcbLocalAddr:inp+darwinXinpcbLocalAddr+16]) == ([16]byte{}) &&
++				[16]byte(buf[inp+darwinXinpcbForeignAddr:inp+darwinXinpcbForeignAddr+16]) == ([16]byte{}) {
++				entry.localAddr, entry.remoteAddr = netip.IPv6Unspecified(), netip.IPv6Unspecified()
++				entries = append(entries, entry)
++			}
+ 		}
+ 	}
+ 	return entries
+@@ -211,37 +218,48 @@
+ 	if !sourceAddr.IsValid() {
+ 		return darwinConnectionEntry{}, darwinConnectionMatchExact, os.ErrInvalid
+ 	}
+-	var localFallback darwinConnectionEntry
+-	var hasLocalFallback bool
+-	var wildcardFallback darwinConnectionEntry
+-	var hasWildcardFallback bool
++	var candidate darwinConnectionEntry
++	var candidateKind darwinConnectionMatchKind
++	found := false
+ 	for _, entry := range entries {
+ 		if entry.localPort != source.Port() || sourceAddr.BitLen() != entry.localAddr.BitLen() {
+ 			continue
+ 		}
+-		if entry.localAddr == sourceAddr && destination.IsValid() && entry.remotePort == destination.Port() && entry.remoteAddr == destination.Addr() {
+-			return entry, darwinConnectionMatchExact, nil
+-		}
+-		if !destination.IsValid() && entry.localAddr == sourceAddr {
+-			return entry, darwinConnectionMatchExact, nil
+-		}
++		exact := entry.localAddr == sourceAddr && destination.IsValid() && entry.remotePort == destination.Port() && entry.remoteAddr == destination.Addr()
+ 		if network != N.NetworkUDP {
+-			continue
+-		}
+-		if !hasLocalFallback && entry.localAddr == sourceAddr {
+-			hasLocalFallback = true
+-			localFallback = entry
+-		}
+-		if !hasWildcardFallback && entry.localAddr.IsUnspecified() {
+-			hasWildcardFallback = true
+-			wildcardFallback = entry
+-		}
+-	}
+-	if hasLocalFallback {
+-		return localFallback, darwinConnectionMatchLocalFallback, nil
+-	}
+-	if hasWildcardFallback {
+-		return wildcardFallback, darwinConnectionMatchWildcardFallback, nil
++			if exact || (!destination.IsValid() && entry.localAddr == sourceAddr) {
++				if !found || (candidate.pid == 0 && entry.pid != 0) {
++					candidate, candidateKind, found = entry, darwinConnectionMatchExact, true
++				} else if entry.pid != 0 && (candidate.pid != entry.pid || candidate.uid != entry.uid) {
++					return darwinConnectionEntry{}, darwinConnectionMatchExact, ErrNotFound
++				}
++			}
++			continue
++		}
++		kind := darwinConnectionMatchExact
++		if !exact {
++			if entry.remotePort != 0 || !entry.remoteAddr.IsUnspecified() {
++				continue
++			}
++			switch {
++			case entry.localAddr == sourceAddr:
++				kind = darwinConnectionMatchLocalFallback
++			case entry.localAddr.IsUnspecified():
++				kind = darwinConnectionMatchWildcardFallback
++			default:
++				continue
++			}
++		}
++		// An unconnected socket can send to the same peer as a connected one.
++		if found && (candidate.pid != entry.pid || candidate.uid != entry.uid) {
++			return darwinConnectionEntry{}, darwinConnectionMatchExact, ErrNotFound
++		}
++		if !found || kind < candidateKind {
++			candidate, candidateKind, found = entry, kind, true
++		}
++	}
++	if found {
++		return candidate, candidateKind, nil
+ 	}
+ 	return darwinConnectionEntry{}, darwinConnectionMatchExact, ErrNotFound
+ }
+--- a/route/process_cache.go
++++ b/route/process_cache.go
+@@ -8,6 +8,7 @@
+ 
+ 	"github.com/sagernet/sing-box/adapter"
+ 	"github.com/sagernet/sing-box/common/process"
++	N "github.com/sagernet/sing/common/network"
+ )
+ 
+ type processCacheKey struct {
+@@ -22,6 +23,10 @@
+ }
+ 
+ func (r *Router) findProcessInfoCached(ctx context.Context, network string, source netip.AddrPort, destination netip.AddrPort) (*adapter.ConnectionOwner, error) {
++	// Ephemeral TCP/UDP source ports can move between groups as soon as a socket closes.
++	if network == N.NetworkUDP || network == N.NetworkTCP {
++		return process.FindProcessInfo(r.processSearcher, ctx, network, source, destination)
++	}
+ 	key := processCacheKey{
+ 		Network:     network,
+ 		Source:      source,
+--- a/route/route.go
++++ b/route/route.go
+@@ -301,6 +301,9 @@
+ 	metadata.RouteOutbound = selectedOutbound.Tag()
+ 	for _, tracker := range r.trackers {
+ 		conn = tracker.RoutedPacketConnection(ctx, conn, metadata, selectedRule, selectedOutbound)
++	}
++	if metadata.Inbound == "packet-capture" {
++		conn = r.guardPacketOwner(ctx, conn, metadata)
+ 	}
+ 	if metadata.FakeIP {
+ 		conn = newFakeIPNATPacketConn(bufio.NewNetPacketConn(conn), metadata.OriginDestination, metadata.Destination)

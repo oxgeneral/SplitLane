@@ -70,7 +70,8 @@ final class TCPRelay {
                 if let error { self.stop(with: error); return }
                 let eof = data?.isEmpty != false
                 self.connection.send(content: eof ? nil : data, contentContext: eof ? .finalMessage : .defaultMessage,
-                                     isComplete: true, completion: .contentProcessed { error in
+                                     isComplete: true, completion: .contentProcessed { [weak self] error in
+                    guard let self, !self.isClosed else { return }
                     if let error { self.stop(with: error); return }
                     if eof {
                         self.appFinished = true

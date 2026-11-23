@@ -11,13 +11,16 @@ struct TunConfiguration: Sendable {
     let systemIPv6: String?
 
     static func make(rules apps: [AppRule], probe: Bool = false) throws -> TunConfiguration {
+        try RuleConfiguration.validateLocalUDPPolicy(apps)
         guard !apps.isEmpty else { throw failure("Сначала добавь хотя бы одно правило.") }
         guard let systemInterface = try routeInterface(arguments: probe
             ? ["-n", "get", probeAddress] : ["-n", "get", "-inet", "default"]) else {
             throw failure("Не удалось определить системный маршрут IPv4.")
         }
         let systemIPv6 = probe ? nil : try routeInterface(arguments: ["-n", "get", "-inet6", "default"])
-        if !probe, systemInterface.hasPrefix("utun") || systemIPv6?.hasPrefix("utun") == true {
+        if !probe, DefaultNetwork.isTunnelInterface(systemInterface) ||
+            systemIPv6.map(DefaultNetwork.isTunnelInterface) == true ||
+            DefaultNetwork.activeVPNInterface() != nil {
             // shortcut: keep the original VPN available until full-tunnel coexistence is verified.
             throw failure("Полный режим выключен: macOS уже направляет интернет через системный VPN.")
         }
@@ -34,12 +37,7 @@ struct TunConfiguration: Sendable {
 
         for (index, app) in apps.sorted(by: { $0.path.count > $1.path.count }).enumerated() {
             let tag = "\(index + 1) \(app.name)"
-            let url = URL(fileURLWithPath: app.path).resolvingSymlinksInPath()
-            guard let executable = Bundle(url: url)?.executableURL?.resolvingSymlinksInPath() else {
-                throw failure("Не удалось найти приложение \(app.name).")
-            }
-            let bundlePath = executable.deletingLastPathComponent().deletingLastPathComponent()
-                .deletingLastPathComponent().path
+            let bundlePath = try canonicalAppBundlePath(for: app.path, name: app.name)
             let pattern = "^" + NSRegularExpression.escapedPattern(for: bundlePath) + "/"
             rules.append(["process_path_regex": pattern, "action": "route", "outbound": tag])
             var outbound = try makeOutbound(for: app)
@@ -107,6 +105,14 @@ struct TunConfiguration: Sendable {
             if route.kind == .socks5 { outbound["version"] = "5" }
             if route.kind == .https { outbound["tls"] = ["enabled": true] }
             if ["127.0.0.1", "::1", "localhost"].contains(server) { outbound["bind_interface"] = "lo0" }
+            if let id = route.proxyCredentialID {
+                let credentials = try ProxyCredentials.load(id)
+                guard credentials.isValid(for: route.kind) else {
+                    throw failure("Проверь логин и пароль прокси для \(app.name).")
+                }
+                outbound["username"] = credentials.username
+                outbound["password"] = credentials.password
+            }
             return outbound
         }
     }

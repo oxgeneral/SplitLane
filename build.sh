@@ -11,7 +11,7 @@ esac
 mkdir -p .build
 compiler=(xcrun swiftc -swift-version 5 -target "$(uname -m)-apple-macos15.0")
 if [[ "$mode" == test ]]; then
-    "${compiler[@]}" Sources/Shared/*.swift Tests/Check.swift -o .build/check
+    "${compiler[@]}" Sources/Shared/*.swift Tests/{Check,ProxyPermissionCheck,NetworkAdaptationCheck}.swift -o .build/check
     .build/check
     exit
 fi
@@ -51,15 +51,22 @@ PLIST
 }
 
 bundle_info "$plist" "$app_id" SplitWebOnMac APPL
+plutil -insert LSUIElement -bool YES "$plist"
 cp Sources/App/Resources/AppIcon.icns "$app/Contents/Resources/"
 plutil -insert CFBundleIconFile -string AppIcon.icns "$plist"
 "${compiler[@]}" Sources/Shared/*.swift Sources/App/*.swift -o "$app/Contents/MacOS/SplitWebOnMac"
-"${compiler[@]}" -module-name SplitWebProxy Sources/Shared/*.swift Sources/Extension/*.swift -o "$out/SplitWebProxy"
+"${compiler[@]}" -module-name SplitWebProxy Sources/Shared/*.swift Sources/Extension/*.swift -lbsm -o "$out/SplitWebProxy"
 
 if [[ "$mode" == tun || "$mode" == local || "$mode" == standalone ]]; then
     engine_stamp=.build/engines/sing-box-local.stamp
     if [[ ! -x .build/engines/sing-box-local || ! -f "$engine_stamp" || build-engine.sh -nt "$engine_stamp" ||
+          Sources/Engine/darwin-udp-owner.patch -nt "$engine_stamp" || Tests/DarwinUDPOwner_test.go -nt "$engine_stamp" ||
+          Sources/Engine/darwin-udp-scope.patch -nt "$engine_stamp" || Sources/Engine/udp_scope_darwin.go -nt "$engine_stamp" ||
+          Tests/UDPScope_test.go -nt "$engine_stamp" ||
+          Sources/Engine/darwin-dns.patch -nt "$engine_stamp" || Tests/DarwinDNS_test.go -nt "$engine_stamp" ||
+          Sources/Engine/udp_owner_guard.go -nt "$engine_stamp" || Tests/UDPOwnerGuard_test.go -nt "$engine_stamp" ||
           Sources/Engine/vpn_app_darwin.go -nt "$engine_stamp" || Sources/Engine/webkit_darwin.go -nt "$engine_stamp" ||
+          Tests/VPNServiceBinding_test.go -nt "$engine_stamp" ||
           Sources/Engine/amnezia_darwin.go -nt "$engine_stamp" ]]; then
         ./build-engine.sh
     fi
@@ -68,7 +75,8 @@ if [[ "$mode" == tun || "$mode" == local || "$mode" == standalone ]]; then
     engine_sha="$(shasum -a 256 "$app/Contents/Resources/sing-box" | awk '{print $1}')"
     plutil -insert SplitWebEngineSHA -string "$engine_sha" "$plist"
     if [[ "$mode" != tun ]]; then
-        "${compiler[@]}" -parse-as-library Sources/Tools/ProxyOverlay.swift -o "$app/Contents/Resources/proxy-overlay"
+        "${compiler[@]}" -parse-as-library Sources/Tools/{ProxyOverlay,PacketCapture,VPNProxyOverlay}.swift \
+            Sources/Shared/{SystemTimeZoneCommand,PacketRoutingConfiguration,ProxyOverlaySettings,ProxyOverlayRequest}.swift -o "$app/Contents/Resources/proxy-overlay"
         cp Sources/Engine/run-proxy.sh Sources/Engine/run-engine.sh Sources/Engine/proxy-permission.sh "$app/Contents/Resources/"
         helper_sha="$(shasum -a 256 "$app/Contents/Resources/proxy-overlay" | awk '{print $1}')"
         plutil -insert SplitWebProxyOverlaySHA -string "$helper_sha" "$plist"
@@ -121,9 +129,16 @@ PLIST
     codesign --force --timestamp --options runtime --sign "$SPLITWEB_SIGN_IDENTITY" --entitlements "$out/extension.entitlements" "$extension"
     codesign --force --timestamp --options runtime --sign "$SPLITWEB_SIGN_IDENTITY" --entitlements "$out/app.entitlements" "$app"
 else
-    codesign --force --sign - "$app"
+    local_signing_identity="${SPLITWEB_LOCAL_SIGN_IDENTITY:-}"
+    if [[ -z "$local_signing_identity" && -f .build/local-signing-identity ]]; then
+        IFS= read -r local_signing_identity < .build/local-signing-identity
+    fi
+    codesign --force --sign "${local_signing_identity:--}" "$app"
 fi
 codesign --verify --deep --strict "$app"
+if [[ "$mode" != signed && -n "${local_signing_identity:-}" && "$local_signing_identity" != - ]]; then
+    printf '%s\n' "$local_signing_identity" > .build/local-signing-identity
+fi
 
 destination="$PWD/.build/$mode"
 mkdir -p "$destination"

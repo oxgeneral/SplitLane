@@ -112,16 +112,35 @@ func physicalDefault() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	var fallback string
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 4 || fields[0] != "default" || !strings.HasPrefix(fields[3], "en") {
 			continue
 		}
-		if _, err := strconv.Atoi(fields[3][2:]); err == nil {
-			if dev, err := net.InterfaceByName(fields[3]); err == nil && dev.Flags&net.FlagUp != 0 {
-				return dev.Name, nil
+		if _, err := strconv.Atoi(fields[3][2:]); err != nil {
+			continue
+		}
+		dev, err := net.InterfaceByName(fields[3])
+		if err != nil || dev.Flags&net.FlagUp == 0 {
+			continue
+		}
+		if fallback == "" {
+			fallback = dev.Name
+		}
+		if strings.HasPrefix(fields[1], "link#") || dev.Flags&net.FlagRunning == 0 {
+			continue
+		}
+		if addrs, err := dev.Addrs(); err == nil {
+			for _, addr := range addrs {
+				if ipNet, ok := addr.(*net.IPNet); ok && ipNet.IP.To4() != nil && !ipNet.IP.IsLinkLocalUnicast() {
+					return dev.Name, nil
+				}
 			}
 		}
+	}
+	if fallback != "" {
+		return fallback, nil
 	}
 	return "", errors.New("no physical IPv4 route")
 }

@@ -20,14 +20,21 @@ func pickGroupApps() async -> [GroupApp] {
             panel.begin(completionHandler: completed)
         }
     }
-    guard response == .OK else { return [] }
-    let urls = panel.urls
+    return response == .OK ? await groupApps(from: panel.urls) : []
+}
+
+func groupApps(from urls: [URL], knownApps: [GroupApp] = []) async -> [GroupApp] {
     let ownID = Bundle.main.bundleIdentifier
     return await Task.detached(priority: .userInitiated) { () -> [GroupApp] in
-        urls.compactMap { url in
+        let knownByPath = Dictionary(uniqueKeysWithValues: knownApps.map { ($0.path, $0) })
+        return urls.compactMap { url in
+            guard url.isFileURL else { return nil }
+            if let known = knownByPath[url.path] { return known }
             let resolved = url.resolvingSymlinksInPath()
-            guard let bundle = Bundle(url: resolved), let identifier = bundle.bundleIdentifier,
-                  identifier != ownID else { return nil }
+            if let known = knownByPath[resolved.path] { return known }
+            guard resolved.pathExtension == "app", let bundle = Bundle(url: resolved),
+                  let identifier = bundle.bundleIdentifier,
+                  identifier != ownID, identifier != "local.splitwebonmac.amnezia" else { return nil }
 
             var code: SecStaticCode?
             var signingInfo: CFDictionary?
@@ -46,9 +53,14 @@ struct GroupEditor: View {
     @Environment(\.dismiss) private var dismiss
     @State var group: RouteGroup
     @State private var selectingProfile = false
+    @State private var selectingTimeZone = false
     @State private var didChooseCategory = false
+    @State private var credentials = ProxyCredentials()
+    @State private var credentialsLoaded = false
+    @State private var saving = false
+    @State private var errorMessage: String?
     let editing: Bool
-    let save: (RouteGroup) -> Void
+    let save: (RouteGroup, ProxyCredentials?) async throws -> Void
 
     let interfaces: [NetworkChoice]
     let vpns: [NetworkChoice]
@@ -56,6 +68,10 @@ struct GroupEditor: View {
     let connectedVPNApps: Set<String>
     let supportsWireGuard: Bool
     let supportsAmnezia: Bool
+    let supportsProxyCredentials: Bool
+    let supportsUDPBlocking: Bool
+    let usesSystemUDPFilter: Bool
+    let supportsGroupTUN: Bool
 
     private enum Category: String, CaseIterable {
         case vpn = "VPN"
@@ -126,35 +142,58 @@ struct GroupEditor: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(editing ? "Настройки группы" : "Новая сетевая группа")
-                    .font(.title2.weight(.semibold))
-                Text("У всех приложений в группе будет один сетевой выход.")
-                    .foregroundStyle(.secondary)
-            }
+        VStack(alignment: .leading, spacing: 0) {
+            Text(editing ? "Настройки группы" : "Новая сетевая группа")
+                .font(.title2.weight(.semibold))
+                .accessibilityAddTraits(.isHeader)
+                .padding(16)
 
-            TextField("Название группы", text: $group.name, prompt: Text("По названию выхода"))
-                .textFieldStyle(.roundedBorder)
+            Divider()
 
-            Picker("Способ подключения", selection: categorySelection) {
-                ForEach(Category.allCases, id: \.self) { category in
-                    Text(category.rawValue).tag(Optional(category))
+            Form {
+                Section {
+                    TextField("Название группы", text: $group.name, prompt: Text("По названию выхода"))
+                }
+                Section("Подключение") {
+                    Picker("Способ подключения", selection: categorySelection) {
+                        ForEach(Category.allCases, id: \.self) { category in
+                            Text(category.rawValue).tag(Optional(category))
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+
+                    if let selection = categorySelection.wrappedValue {
+                        switch selection {
+                        case .vpn: vpnFields
+                        case .proxy: proxyFields
+                        case .direct: directFields
+                        }
+                        if supportsGroupTUN {
+                            Toggle("Перехватывать трафик через TUN", isOn: Binding(
+                                get: { group.usesTUNInProxyMode },
+                                set: { group.useTUN = $0 }
+                            ))
+                            Text("Применяет маршрут группы к приложениям, которые подключаются в обход системного прокси. Для новых соединений.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        udpProtection
+                    }
+                }
+                Section {
+                    timeZoneField
                 }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
+            .formStyle(.grouped)
 
-            if let selection = categorySelection.wrappedValue {
-                switch selection {
-                case .vpn: vpnFields
-                case .proxy: proxyFields
-                case .direct: directFields
-                }
-            } else {
-                Text("Выбери выход для группы, затем добавь приложения.")
+            if let errorMessage {
+                Text(errorMessage)
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 8)
             }
 
             Divider()
@@ -163,16 +202,41 @@ struct GroupEditor: View {
                 Spacer()
                 Button("Отмена") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button(editing ? "Сохранить" : "Создать группу") {
-                    group.name = group.name.trimmingCharacters(in: .whitespacesAndNewlines)
-                    save(group)
-                    dismiss()
+                    saving = true
+                    errorMessage = nil
+                    let auth = group.route.kind.isProxy && !credentials.isEmpty ? credentials : nil
+                    var updated = group
+                    updated.name = group.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    Task {
+                        defer { saving = false }
+                        do {
+                            try await save(updated, auth)
+                            dismiss()
+                        } catch {
+                            errorMessage = error.localizedDescription
+                        }
+                    }
                 }
                 .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
                 .disabled(!canSave)
             }
+            .padding(16)
         }
-        .padding(24)
-        .frame(width: 440)
+        .frame(width: 470, height: 440)
+        .disabled(saving)
+        .task {
+            guard supportsProxyCredentials, let id = group.route.proxyCredentialID else { return }
+            do {
+                let stored = try await Task.detached(priority: .userInitiated) { try ProxyCredentials.load(id) }.value
+                guard !Task.isCancelled, group.route.proxyCredentialID == id else { return }
+                if credentials.isEmpty { credentials = stored }
+                credentialsLoaded = true
+            } catch {
+                guard !Task.isCancelled, group.route.proxyCredentialID == id else { return }
+                errorMessage = error.localizedDescription
+            }
+        }
         .fileImporter(isPresented: $selectingProfile, allowedContentTypes: [UTType(filenameExtension: "conf") ?? .data]) {
             if case .success(let url) = $0 { group.route.target = url.path }
         }
@@ -234,7 +298,7 @@ struct GroupEditor: View {
 
     private var proxyFields: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Picker("Тип", selection: $group.route.kind) {
+            Picker("Протокол", selection: $group.route.kind) {
                 ForEach([RouteKind.socks5, .http, .https]) { kind in
                     Text(kind.title).tag(kind)
                 }
@@ -254,6 +318,24 @@ struct GroupEditor: View {
                 .frame(width: 72)
             }
             .textFieldStyle(.roundedBorder)
+            if supportsProxyCredentials {
+                HStack(alignment: .top, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Логин").font(.caption).foregroundStyle(.secondary).accessibilityHidden(true)
+                        TextField("Логин", text: $credentials.username)
+                            .labelsHidden()
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Пароль").font(.caption).foregroundStyle(.secondary).accessibilityHidden(true)
+                        SecureField("Пароль", text: $credentials.password)
+                            .labelsHidden()
+                    }
+                }
+                .textFieldStyle(.roundedBorder)
+                Text("Оставь оба поля пустыми, если прокси без авторизации.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -267,6 +349,53 @@ struct GroupEditor: View {
         }
     }
 
+    private var udpProtection: some View {
+        let udpRoute = group.usesTUNInProxyMode
+            ? "При выключении UDP идёт через TUN. Выход группы должен поддерживать UDP."
+            : "При выключении UDP использует сеть macOS."
+        return VStack(alignment: .leading, spacing: 5) {
+            Toggle("Защита от утечек WebRTC", isOn: Binding(
+                get: { group.blockUDP ?? supportsUDPBlocking },
+                set: { group.blockUDP = $0 }
+            ))
+            .toggleStyle(.switch)
+            .disabled(!supportsUDPBlocking && group.blockUDP != true)
+
+            Text(usesSystemUDPFilter
+                 ? "Блокирует исходящий UDP группы, включая WebRTC и HTTP/3. \(udpRoute)"
+                 : supportsUDPBlocking
+                    ? "Блокирует UDP приложений группы. При выключении UDP использует сеть macOS."
+                    : "В этой сборке WebRTC может обходить маршрут группы.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var timeZoneField: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text("Часовой пояс")
+                Spacer()
+                Button {
+                    selectingTimeZone.toggle()
+                } label: {
+                    Label(group.timeZoneIdentifier ?? "Системный", systemImage: "chevron.up.chevron.down")
+                }
+                .accessibilityLabel("Часовой пояс, \(group.timeZoneIdentifier ?? "системный")")
+                .popover(isPresented: $selectingTimeZone, arrowEdge: .bottom) {
+                    TimeZonePicker(selection: $group.timeZoneIdentifier) { selectingTimeZone = false }
+                }
+            }
+            if group.timeZoneIdentifier != nil {
+                Text("Нажми «Открыть с поясом» рядом с приложением в SplitWeb. Настройка передаётся при новом запуске.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
     private var canSave: Bool {
         switch group.route.kind {
         case .direct: interfaces.contains { $0.id == group.route.target }
@@ -274,7 +403,70 @@ struct GroupEditor: View {
         case .amnezia: supportsAmnezia
         case .vpn: vpns.contains { $0.id == group.route.target }
         case .wireguard: supportsWireGuard && group.route.isValid && interfaces.contains { $0.id == group.route.interface }
-        case .socks5, .http, .https: group.route.isValid
+        case .socks5, .http, .https:
+            group.route.isValid && (credentials.isEmpty
+                ? group.route.proxyCredentialID == nil || credentialsLoaded
+                : supportsProxyCredentials && credentials.isValid(for: group.route.kind))
         }
+    }
+}
+
+struct TimeZonePicker: View {
+    @Binding var selection: String?
+    var defaultTitle = "Системный"
+    var includesUTC = true
+    let dismiss: () -> Void
+    @State private var search = ""
+    @FocusState private var searchFocused: Bool
+
+    private static let knownIdentifiers = TimeZone.knownTimeZoneIdentifiers.sorted()
+    private static let identifiersWithUTC = Set(knownIdentifiers).union(["UTC"]).sorted()
+
+    var body: some View {
+        let identifiers = includesUTC ? Self.identifiersWithUTC : Self.knownIdentifiers
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matches = query.isEmpty ? identifiers : identifiers.filter { identifier in
+            identifier.localizedStandardContains(query) ||
+                identifier.replacingOccurrences(of: "_", with: " ").localizedStandardContains(query)
+        }
+
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("Поиск по городу, например New York", text: $search)
+                .textFieldStyle(.roundedBorder)
+                .focused($searchFocused)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 1) {
+                    if query.isEmpty { option(defaultTitle, identifier: nil) }
+                    ForEach(matches, id: \.self) { option($0, identifier: $0) }
+                    if matches.isEmpty {
+                        Text("Часовой пояс не найден")
+                            .foregroundStyle(.secondary)
+                            .padding(6)
+                    }
+                }
+            }
+            .frame(height: 224)
+        }
+        .padding(12)
+        .frame(width: 300)
+        .onAppear { searchFocused = true }
+    }
+
+    private func option(_ title: String, identifier: String?) -> some View {
+        Button {
+            selection = identifier
+            dismiss()
+        } label: {
+            HStack {
+                Text(title)
+                Spacer()
+                if selection == identifier { Image(systemName: "checkmark") }
+            }
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selection == identifier ? .isSelected : [])
     }
 }

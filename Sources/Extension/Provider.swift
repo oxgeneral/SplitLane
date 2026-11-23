@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Network
 import NetworkExtension
@@ -52,13 +53,16 @@ final class Provider: NETransparentProxyProvider {
         let metadata = flow.metaData
         let path = executablePath(for: metadata.sourceAppAuditToken)
         return queue.sync {
-            guard let rule = AppRule.match(signingID: metadata.sourceAppSigningIdentifier,
-                                           executablePath: path, rules: rules) else { return false }
+            let rule = AppRule.match(signingID: metadata.sourceAppSigningIdentifier, executablePath: path, rules: rules)
+                ?? webKitOwnerPath(for: metadata.sourceAppAuditToken, executablePath: path).flatMap {
+                    AppRule.match(signingID: metadata.sourceAppSigningIdentifier, executablePath: $0, rules: rules)
+                }
+            guard let rule else { return false }
+            if flow is NEAppProxyUDPFlow && !rule.blocksUDPInExtension { return false }
             routingLog.debug("Matched \(rule.signingID, privacy: .private(mask: .hash)) to \(rule.route.kind.rawValue, privacy: .public)")
             guard let tcp = flow as? NEAppProxyTCPFlow,
                   let parameters = tcpParameters(for: rule.route,
                     interfaces: pathMonitor?.currentPath.availableInterfaces ?? []) else {
-                // shortcut: block UDP for assigned apps until each transport has its own UDP relay.
                 flow.closeReadWithError(refused)
                 flow.closeWriteWithError(refused)
                 return true
@@ -88,5 +92,26 @@ final class Provider: NETransparentProxyProvider {
         guard SecCodeCopyStaticCode(guest, [], &code) == errSecSuccess, let code,
               SecCodeCopyPath(code, [], &url) == errSecSuccess, let url else { return nil }
         return (url as URL).resolvingSymlinksInPath().path
+    }
+
+    // shortcut: use the same WebKit ownership lookup as the local engine until macOS exposes it publicly.
+    private static let responsiblePID: (@convention(c) (pid_t) -> pid_t)? = {
+        guard let symbol = dlsym(dlopen(nil, RTLD_LAZY), "responsibility_get_pid_responsible_for_pid") else {
+            return nil
+        }
+        return unsafeBitCast(symbol, to: (@convention(c) (pid_t) -> pid_t).self)
+    }()
+
+    private func webKitOwnerPath(for token: Data?, executablePath: String?) -> String? {
+        guard let executablePath, !executablePath.contains(".app/"),
+              let token, token.count == MemoryLayout<audit_token_t>.size,
+              let lookup = Self.responsiblePID else { return nil }
+        let pid = audit_token_to_pid(token.withUnsafeBytes { $0.loadUnaligned(as: audit_token_t.self) })
+        let owner = lookup(pid)
+        guard owner > 1, owner != pid else { return nil }
+        var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        guard proc_pidpath(owner, &path, UInt32(path.count)) > 0 else { return nil }
+        let resolved = URL(fileURLWithPath: String(cString: path)).resolvingSymlinksInPath().path
+        return resolved.contains(".app/") ? resolved : nil
     }
 }

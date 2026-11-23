@@ -5,6 +5,7 @@ package dialer
 #include <CoreFoundation/CoreFoundation.h>
 #include <SystemConfiguration/SystemConfiguration.h>
 #include <net/if.h>
+#include <stdbool.h>
 #include <stdlib.h>
 
 static unsigned int interfaceForService(CFStringRef id) {
@@ -33,9 +34,14 @@ static unsigned int interfaceForService(CFStringRef id) {
 	return index;
 }
 
-static int splitWebVPNInterface(const char *providers) {
-	CFStringRef names = CFStringCreateWithCString(NULL, providers, kCFStringEncodingUTF8);
+static int splitWebVPNInterface(const char *target, bool service) {
+	CFStringRef names = CFStringCreateWithCString(NULL, target, kCFStringEncodingUTF8);
 	if (!names) return 0;
+	if (service) {
+		int index = (int)interfaceForService(names);
+		CFRelease(names);
+		return index;
+	}
 	CFArrayRef allowed = CFStringCreateArrayBySeparatingStrings(NULL, names, CFSTR("|"));
 	CFRelease(names);
 	if (!allowed) return 0;
@@ -78,20 +84,36 @@ import (
 )
 
 func splitWebBindInterface(finder control.InterfaceFinder, name string) control.Func {
-	providers, isVPN := strings.CutPrefix(name, "splitweb-vpn:")
-	if !isVPN {
-		return control.BindToInterface(finder, name, -1)
+	if serviceID, ok := strings.CutPrefix(name, "splitweb-vpn-service:"); ok {
+		return splitWebVPNControl(serviceID, true, resolveSplitWebVPN)
 	}
+	if providers, ok := strings.CutPrefix(name, "splitweb-vpn:"); ok {
+		return splitWebVPNControl(providers, false, resolveSplitWebVPN)
+	}
+	return control.BindToInterface(finder, name, -1)
+}
+
+func resolveSplitWebVPN(target string, service bool) int {
+	if strings.IndexByte(target, 0) >= 0 {
+		return 0
+	}
+	name := C.CString(target)
+	defer C.free(unsafe.Pointer(name))
+	return int(C.splitWebVPNInterface(name, C.bool(service)))
+}
+
+func splitWebVPNControl(target string, service bool, resolve func(string, bool) int) control.Func {
 	return func(network, _ string, conn syscall.RawConn) error {
-		if providers == "" {
-			return errors.New("VPN app is not connected")
+		index := 0
+		if target != "" {
+			index = resolve(target, service)
 		}
-		names := C.CString(providers)
-		index := int(C.splitWebVPNInterface(names))
-		C.free(unsafe.Pointer(names))
 		if index < 0 {
 			return errors.New("VPN app has more than one active connection")
 		} else if index == 0 {
+			if service {
+				return errors.New("VPN profile is not connected")
+			}
 			return errors.New("VPN app is not connected")
 		}
 		return control.Raw(conn, func(fd uintptr) error {

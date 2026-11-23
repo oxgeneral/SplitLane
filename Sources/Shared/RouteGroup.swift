@@ -12,6 +12,12 @@ struct RouteGroup: Identifiable, Codable, Equatable, Sendable {
     var name = ""
     var route = Route()
     var apps: [GroupApp] = []
+    var blockUDP: Bool?
+    var useTUN: Bool?
+    var timeZoneIdentifier: String?
+
+    var blocksUDPInProxyMode: Bool { blockUDP != false }
+    var usesTUNInProxyMode: Bool { useTUN != false }
 }
 
 struct RouteGroups: Codable, Equatable, Sendable {
@@ -21,7 +27,8 @@ struct RouteGroups: Codable, Equatable, Sendable {
     var rules: [AppRule] {
         groups.flatMap { group in
             group.apps.map {
-                AppRule(name: $0.name, path: $0.path, signingID: $0.signingID, route: group.route)
+                AppRule(name: $0.name, path: $0.path, signingID: $0.signingID,
+                        route: group.route, blockUDP: group.blockUDP, useTUN: group.useTUN)
             }
         }
     }
@@ -31,10 +38,12 @@ struct RouteGroups: Codable, Equatable, Sendable {
     init(legacyRules: [AppRule]) {
         for rule in legacyRules {
             let app = GroupApp(name: rule.name, path: rule.path, signingID: rule.signingID)
-            if let index = groups.firstIndex(where: { $0.route == rule.route }) {
+            if let index = groups.firstIndex(where: {
+                $0.route == rule.route && $0.blockUDP == rule.blockUDP && $0.useTUN == rule.useTUN
+            }) {
                 groups[index].apps.append(app)
             } else {
-                groups.append(RouteGroup(route: rule.route, apps: [app]))
+                groups.append(RouteGroup(route: rule.route, apps: [app], blockUDP: rule.blockUDP, useTUN: rule.useTUN))
             }
         }
     }
@@ -82,7 +91,8 @@ struct RouteGroups: Codable, Equatable, Sendable {
 
     private func validate() throws {
         guard Set(groups.map(\.id)).count == groups.count,
-              groups.allSatisfy({ $0.route.isValid }) else {
+              groups.allSatisfy({ $0.route.isValid &&
+                  ($0.route.proxyCredentialID == nil || $0.route.proxyCredentialID == $0.id) }) else {
             throw TunConfiguration.failure("Проверь выходы сетевых групп.")
         }
         try RuleConfiguration.validate(rules)

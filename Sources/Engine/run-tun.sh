@@ -11,12 +11,22 @@ address=$7
 system_v4=$8
 system_v6=$9
 shift 9
+zone_script=$1
+zone=$2
+shift 2
 interfaces=("$@")
 
 [[ $token =~ ^[A-F0-9-]{36}$ ]]
 state="/private/tmp/splitwebonmac-$token"
 private="$state/private"
 pid=
+zone_journal=/var/db/local.splitwebonmac.time-zone-restore.json
+
+restore_zone() {
+    if [[ -e $zone_journal ]]; then
+        /usr/bin/osascript -l JavaScript -e "$zone_script" -- restore
+    fi
+}
 
 fail() {
     printf '%s\n' "$1" >&2
@@ -50,6 +60,7 @@ tun_interface() {
 }
 
 cleanup() {
+    local zone_status=0
     if [[ -n $pid ]]; then
         kill -TERM "$pid" 2>/dev/null || true
         for _ in 1 2 3 4 5; do
@@ -59,14 +70,17 @@ cleanup() {
         kill -KILL "$pid" 2>/dev/null || true
         wait "$pid" 2>/dev/null || true
     fi
+    restore_zone || zone_status=$?
     for path in "$state/ready" "$private/sing-box" "$private/config.json" "$private/engine.log"; do
         [[ ! -e $path ]] || /bin/rm "$path"
     done
     [[ ! -d $private ]] || /bin/rmdir "$private"
     /bin/rmdir "$state"
+    return "$zone_status"
 }
 
 lease_live || exit 0
+restore_zone
 [[ $(route_interface -inet default) == "$system_v4" ]] ||
     fail "Системный маршрут изменился. Включи правила ещё раз."
 [[ $(route_interface -inet6 default || true) == "$system_v6" ]] ||
@@ -105,6 +119,10 @@ if [[ -z "$tun" ]]; then
     fail "macOS не направила тестовые адреса через новый интерфейс. Маршруты восстановлены."
 fi
 
+lease_live || exit 0
+if [[ -n $zone ]]; then
+    /usr/bin/osascript -l JavaScript -e "$zone_script" -- begin "$zone"
+fi
 printf '%s\n' "$tun" > "$state/ready"
 chmod 644 "$state/ready"
 

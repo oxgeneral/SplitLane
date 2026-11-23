@@ -1,0 +1,226 @@
+--- a/dns/transport/local/local.go
++++ b/dns/transport/local/local.go
+@@ -16,6 +16,7 @@
+ 	E "github.com/sagernet/sing/common/exceptions"
+ 	"github.com/sagernet/sing/common/logger"
+ 	N "github.com/sagernet/sing/common/network"
++	"github.com/sagernet/sing/service"
+ 
+ 	mDNS "github.com/miekg/dns"
+ )
+@@ -37,6 +38,7 @@
+ 	preferredResolver *PreferredDomainResolver
+ 	dialer            N.Dialer
+ 	preferGo          bool
++	useSystemResolver bool
+ 	resolved          ResolvedResolver
+ 	mdnsTransport     adapter.DNSTransport
+ 	configSource      *systemconfig.Source
+@@ -46,22 +48,33 @@
+ }
+ 
+ func NewTransport(ctx context.Context, logger log.ContextLogger, tag string, options option.LocalDNSServerOptions) (adapter.DNSTransport, error) {
++	if C.IsDarwin {
++		options.UDPFragmentDefault = true
++	}
+ 	transportDialer, err := dns.NewLocalDialer(ctx, options)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+ 	preferredResolver, err := NewPreferredDomainResolver(ctx, logger, options)
+ 	if err != nil {
+ 		return nil, err
+ 	}
++	configSource := systemconfig.NewSource(ctx)
++	if options.BindInterface != "" {
++		configSource.SetBindInterface(options.BindInterface)
++	}
++	networkManager := service.FromContext[adapter.NetworkManager](ctx)
++	defaultBound := networkManager != nil && networkManager.DefaultOptions().BindInterface != ""
++	useSystemResolver := C.IsDarwin && !options.PreferGo && options.BindInterface == "" && options.Detour == "" && !defaultBound
+ 	return &Transport{
+ 		TransportAdapter:  dns.NewTransportAdapterWithLocalOptions(C.DNSTypeLocal, tag, options),
+ 		ctx:               ctx,
+ 		logger:            logger,
+ 		preferredResolver: preferredResolver,
+ 		dialer:            transportDialer,
+ 		preferGo:          options.PreferGo,
+-		configSource:      systemconfig.NewSource(ctx),
++		useSystemResolver: useSystemResolver,
++		configSource:      configSource,
+ 	}, nil
+ }
+ 
+@@ -163,6 +176,10 @@
+ 		t.mdnsTransport.ExchangeAsync(ctx, message, callback)
+ 		return
+ 	}
++	if t.useSystemResolver {
++		t.systemExchangeAsync(ctx, message, callback)
++		return
++	}
+ 	if t.resolved != nil {
+ 		t.resolved.ExchangeAsync(ctx, message, callback)
+ 		return
+--- a/dns/transport/local/systemconfig/config.go
++++ b/dns/transport/local/systemconfig/config.go
+@@ -30,6 +30,7 @@
+ 	SingleRequest bool
+ 	UseTCP        bool
+ 	TrustAD       bool
++	Generation    uint64
+ }
+ 
+ func (c *Config) Equal(other *Config) bool {
+@@ -41,16 +42,18 @@
+ 		c.Rotate == other.Rotate &&
+ 		c.SingleRequest == other.SingleRequest &&
+ 		c.UseTCP == other.UseTCP &&
+-		c.TrustAD == other.TrustAD
++		c.TrustAD == other.TrustAD &&
++		c.Generation == other.Generation
+ }
+ 
+ func (c *Config) Signature() []string {
+-	signature := make([]string, 0, len(c.Servers)+len(c.Search)+1)
++	signature := make([]string, 0, len(c.Servers)+len(c.Search)+2)
+ 	for _, server := range c.Servers {
+ 		signature = append(signature, server.String())
+ 	}
+ 	signature = append(signature, c.Search...)
+-	return append(signature, "ndots:"+strconv.Itoa(c.Ndots))
++	signature = append(signature, "ndots:"+strconv.Itoa(c.Ndots))
++	return append(signature, "gen:"+strconv.FormatUint(c.Generation, 10))
+ }
+ 
+ func (c *Config) ServerOffset() uint32 {
+--- a/dns/transport/local/systemconfig/source_darwin.go
++++ b/dns/transport/local/systemconfig/source_darwin.go
+@@ -117,6 +117,7 @@
+ import (
+ 	"context"
+ 	"encoding/binary"
++	"net"
+ 	"net/netip"
+ 	"strconv"
+ 	"sync"
+@@ -132,12 +133,18 @@
+ 	mDNS "github.com/miekg/dns"
+ )
+ 
++var scopedFallbackServers = []M.Socksaddr{
++	M.SocksaddrFrom(netip.AddrFrom4([4]byte{1, 1, 1, 1}), 53),
++	M.SocksaddrFrom(netip.AddrFrom4([4]byte{8, 8, 8, 8}), 53),
++}
++
+ type Source struct {
+ 	interfaceMonitor tun.DefaultInterfaceMonitor
+ 	access           sync.Mutex
+ 	notifyToken      C.int
+ 	notifyValid      bool
+ 	stale            bool
++	bindInterface    string
+ 	interfaceIndex   int
+ 	config           *Config
+ }
+@@ -156,10 +163,29 @@
+ 	return source
+ }
+ 
++func (s *Source) SetBindInterface(name string) {
++	s.access.Lock()
++	s.bindInterface = name
++	s.stale = true
++	s.access.Unlock()
++}
++
++func (s *Source) targetInterfaceIndex(bindInterface string) int {
++	if bindInterface != "" {
++		if iface, err := net.InterfaceByName(bindInterface); err == nil && iface.Flags&net.FlagUp != 0 {
++			return iface.Index
++		}
++		return 0
++	}
++	return s.defaultInterfaceIndex()
++}
++
+ func (s *Source) Configuration() *Config {
+-	interfaceIndex := s.defaultInterfaceIndex()
+ 	s.access.Lock()
++	bindInterface := s.bindInterface
+ 	defer s.access.Unlock()
++	strict := bindInterface != ""
++	interfaceIndex := s.targetInterfaceIndex(bindInterface)
+ 	interfaceChanged := s.interfaceIndex != interfaceIndex
+ 	s.interfaceIndex = interfaceIndex
+ 	changed := s.changedLocked()
+@@ -170,11 +196,11 @@
+ 	systemInfo := copyDNSInfo()
+ 	if systemInfo == nil {
+ 		if s.config == nil {
+-			s.config = new(dnsInfoConfig).build(interfaceIndex)
++			s.config = new(dnsInfoConfig).buildForInterface(interfaceIndex, strict)
+ 		}
+ 		return s.config
+ 	}
+-	config := systemInfo.build(interfaceIndex)
++	config := systemInfo.buildForInterface(interfaceIndex, strict)
+ 	if s.config != nil && config.Equal(s.config) {
+ 		return s.config
+ 	}
+@@ -230,29 +256,39 @@
+ }
+ 
+ type dnsInfoConfig struct {
++	generation      uint64
+ 	resolvers       []dnsInfoResolver
+ 	scopedResolvers []dnsInfoResolver
+ }
+ 
+ func (c *dnsInfoConfig) build(interfaceIndex int) *Config {
++	return c.buildForInterface(interfaceIndex, false)
++}
++
++func (c *dnsInfoConfig) buildForInterface(interfaceIndex int, strict bool) *Config {
+ 	var selected dnsInfoResolver
+ 	if interfaceIndex != 0 {
+ 		selected = common.Find(c.scopedResolvers, func(it dnsInfoResolver) bool {
+ 			return it.interfaceIndex == interfaceIndex && len(it.servers) > 0
+ 		})
+ 	}
+-	if len(selected.servers) == 0 {
++	if !strict && len(selected.servers) == 0 {
+ 		selected = common.Find(c.resolvers, func(it dnsInfoResolver) bool {
+ 			return it.domain == "" && len(it.servers) > 0
+ 		})
+ 	}
+ 	config := &Config{
+-		Ndots:    1,
+-		Timeout:  5 * time.Second,
+-		Attempts: 2,
++		Ndots:      1,
++		Timeout:    5 * time.Second,
++		Attempts:   2,
++		Generation: c.generation,
+ 	}
+ 	if len(selected.servers) == 0 {
+-		config.Servers = defaultServers
++		if strict {
++			config.Servers = scopedFallbackServers
++		} else {
++			config.Servers = defaultServers
++		}
+ 		config.Search = defaultSearch()
+ 		return config
+ 	}
+@@ -277,7 +313,9 @@
+ 		return nil
+ 	}
+ 	defer C.box_dnsinfo_free(rawConfig)
+-	systemInfo := new(dnsInfoConfig)
++	systemInfo := &dnsInfoConfig{
++		generation: uint64(rawConfig.generation),
++	}
+ 	for i := C.int32_t(0); i < rawConfig.n_resolver; i++ {
+ 		rawResolver := C.box_dnsinfo_default_resolver(rawConfig, i)
+ 		if rawResolver == nil {
