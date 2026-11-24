@@ -16,40 +16,40 @@ import (
 )
 
 const (
-	splitWebOriginalUDPInterface   = "splitweb-original-udp"
-	splitWebOriginalScopeInterface = "splitweb-original-scope"
+	splitLaneOriginalUDPInterface   = "splitlane-original-udp"
+	splitLaneOriginalScopeInterface = "splitlane-original-scope"
 )
 
 var (
-	errSplitWebUDPScope = errors.New("original source interface is unavailable or changed")
-	splitWebCaptureIPv4 = netip.MustParseAddr("172.31.252.1")
-	splitWebCaptureIPv6 = netip.MustParseAddr("fd9e:7345:2b1c:252::1")
+	errSplitLaneUDPScope = errors.New("original source interface is unavailable or changed")
+	splitLaneCaptureIPv4 = netip.MustParseAddr("172.31.252.1")
+	splitLaneCaptureIPv6 = netip.MustParseAddr("fd9e:7345:2b1c:252::1")
 )
 
-func rejectSplitWebUnscopedUDP(string, string, syscall.RawConn) error {
-	return errSplitWebUDPScope
+func rejectSplitLaneUnscopedUDP(string, string, syscall.RawConn) error {
+	return errSplitLaneUDPScope
 }
 
-type splitWebUDPScope struct {
+type splitLaneUDPScope struct {
 	name  string
 	index int
 }
 
-func currentSplitWebUDPScope(source netip.Addr) (splitWebUDPScope, error) {
+func currentSplitLaneUDPScope(source netip.Addr) (splitLaneUDPScope, error) {
 	rib, err := route.FetchRIB(unix.AF_UNSPEC, route.RIBTypeInterface, 0)
 	if err != nil {
-		return splitWebUDPScope{}, err
+		return splitLaneUDPScope{}, err
 	}
 	messages, err := route.ParseRIB(route.RIBTypeInterface, rib)
 	if err != nil {
-		return splitWebUDPScope{}, err
+		return splitLaneUDPScope{}, err
 	}
-	return findSplitWebUDPScope(messages, source)
+	return findSplitLaneUDPScope(messages, source)
 }
 
-func findSplitWebUDPScope(messages []route.Message, source netip.Addr) (splitWebUDPScope, error) {
-	if !source.IsGlobalUnicast() || source == splitWebCaptureIPv4 || source == splitWebCaptureIPv6 {
-		return splitWebUDPScope{}, errSplitWebUDPScope
+func findSplitLaneUDPScope(messages []route.Message, source netip.Addr) (splitLaneUDPScope, error) {
+	if !source.IsGlobalUnicast() || source == splitLaneCaptureIPv4 || source == splitLaneCaptureIPv6 {
+		return splitLaneUDPScope{}, errSplitLaneUDPScope
 	}
 	active := make(map[int]string)
 	for _, message := range messages {
@@ -76,28 +76,28 @@ func findSplitWebUDPScope(messages []route.Message, source netip.Addr) (splitWeb
 		}
 		if source == ip {
 			if index != 0 && index != address.Index {
-				return splitWebUDPScope{}, errSplitWebUDPScope
+				return splitLaneUDPScope{}, errSplitLaneUDPScope
 			}
 			index = address.Index
 		}
 	}
 	if name, ok := active[index]; ok {
-		return splitWebUDPScope{name: name, index: index}, nil
+		return splitLaneUDPScope{name: name, index: index}, nil
 	}
-	return splitWebUDPScope{}, errSplitWebUDPScope
+	return splitLaneUDPScope{}, errSplitLaneUDPScope
 }
 
-func (d *DefaultDialer) dialSplitWebOriginalTCP(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
+func (d *DefaultDialer) dialSplitLaneOriginalTCP(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
 	metadata := adapter.ContextFrom(ctx)
 	if metadata == nil || metadata.Inbound != "packet-capture" ||
 		N.NetworkName(network) != N.NetworkTCP || metadata.Network != N.NetworkTCP || !destination.IsIP() {
-		return nil, errSplitWebUDPScope
+		return nil, errSplitLaneUDPScope
 	}
 	source := metadata.Source.Addr.Unmap()
 	if source.BitLen() != destination.Addr.Unmap().BitLen() {
-		return nil, errSplitWebUDPScope
+		return nil, errSplitLaneUDPScope
 	}
-	scope, err := currentSplitWebUDPScope(source)
+	scope, err := currentSplitLaneUDPScope(source)
 	if err != nil {
 		return nil, err
 	}
@@ -113,23 +113,23 @@ func (d *DefaultDialer) dialSplitWebOriginalTCP(ctx context.Context, network str
 	if err != nil {
 		return nil, err
 	}
-	if current, scopeErr := currentSplitWebUDPScope(source); scopeErr != nil || current != scope {
+	if current, scopeErr := currentSplitLaneUDPScope(source); scopeErr != nil || current != scope {
 		_ = conn.Close()
-		return nil, errSplitWebUDPScope
+		return nil, errSplitLaneUDPScope
 	}
 	return d.trackConn(ctx, destination, conn, nil)
 }
 
-func (d *DefaultDialer) listenSplitWebOriginalUDP(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
+func (d *DefaultDialer) listenSplitLaneOriginalUDP(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
 	metadata := adapter.ContextFrom(ctx)
 	if metadata == nil || metadata.Inbound != "packet-capture" || metadata.Network != N.NetworkUDP || !destination.IsIP() {
-		return nil, errSplitWebUDPScope
+		return nil, errSplitLaneUDPScope
 	}
 	source := metadata.Source.Addr.Unmap()
 	if source.BitLen() != destination.Addr.Unmap().BitLen() {
-		return nil, errSplitWebUDPScope
+		return nil, errSplitLaneUDPScope
 	}
-	scope, err := currentSplitWebUDPScope(source)
+	scope, err := currentSplitLaneUDPScope(source)
 	if err != nil {
 		return nil, err
 	}
@@ -143,29 +143,29 @@ func (d *DefaultDialer) listenSplitWebOriginalUDP(ctx context.Context, destinati
 	if err != nil {
 		return nil, err
 	}
-	scoped := &splitWebScopedUDPConn{PacketConn: conn, source: source, scope: scope, lookup: currentSplitWebUDPScope}
+	scoped := &splitLaneScopedUDPConn{PacketConn: conn, source: source, scope: scope, lookup: currentSplitLaneUDPScope}
 	if err := scoped.checkScope(); err != nil {
 		return nil, err
 	}
 	return scoped, nil
 }
 
-type splitWebScopedUDPConn struct {
+type splitLaneScopedUDPConn struct {
 	net.PacketConn
 	source netip.Addr
-	scope  splitWebUDPScope
-	lookup func(netip.Addr) (splitWebUDPScope, error)
+	scope  splitLaneUDPScope
+	lookup func(netip.Addr) (splitLaneUDPScope, error)
 }
 
-func (c *splitWebScopedUDPConn) checkScope() error {
+func (c *splitLaneScopedUDPConn) checkScope() error {
 	if scope, err := c.lookup(c.source); err == nil && scope == c.scope {
 		return nil
 	}
 	_ = c.Close()
-	return errSplitWebUDPScope
+	return errSplitLaneUDPScope
 }
 
-func (c *splitWebScopedUDPConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
+func (c *splitLaneScopedUDPConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 	count, addr, err := c.PacketConn.ReadFrom(buffer)
 	if count == 0 && err != nil {
 		return count, addr, err
@@ -176,7 +176,7 @@ func (c *splitWebScopedUDPConn) ReadFrom(buffer []byte) (int, net.Addr, error) {
 	return count, addr, err
 }
 
-func (c *splitWebScopedUDPConn) WriteTo(buffer []byte, addr net.Addr) (int, error) {
+func (c *splitLaneScopedUDPConn) WriteTo(buffer []byte, addr net.Addr) (int, error) {
 	if err := c.checkScope(); err != nil {
 		return 0, err
 	}

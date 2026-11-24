@@ -37,7 +37,7 @@ extension GroupApp {
             }
         }
         guard runningApps().isEmpty else {
-            throw TunConfiguration.failure("Закрой «\(name)» через ⌘Q и снова открой его из SplitWeb.")
+            throw TunConfiguration.failure("Закрой «\(name)» через ⌘Q и снова открой его из SplitLane.")
         }
 
         let configuration = NSWorkspace.OpenConfiguration()

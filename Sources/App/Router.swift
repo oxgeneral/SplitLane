@@ -20,12 +20,12 @@ final class Router: ObservableObject {
     private var terminating = false
     private var extensionID: String { (Bundle.main.bundleIdentifier ?? "") + ".proxy" }
     var isInstallable: Bool {
-        Bundle.main.object(forInfoDictionaryKey: "SplitWebRoutingBuild") as? Bool == true
+        Bundle.main.object(forInfoDictionaryKey: "SplitLaneRoutingBuild") as? Bool == true
     }
     private var isLocal: Bool {
-        Bundle.main.object(forInfoDictionaryKey: "SplitWebEngineSHA") != nil
+        Bundle.main.object(forInfoDictionaryKey: "SplitLaneEngineSHA") != nil
     }
-    var isProxyMode: Bool { Bundle.main.object(forInfoDictionaryKey: "SplitWebProxyOverlaySHA") != nil }
+    var isProxyMode: Bool { Bundle.main.object(forInfoDictionaryKey: "SplitLaneProxyOverlaySHA") != nil }
     var canRoute: Bool { isInstallable || isLocal }
     var canConfigureSystemTimeZone: Bool { isLocal }
     private var systemTimeZone: String? { UserDefaults.standard.string(forKey: SystemTimeZoneCommand.preference) }
@@ -43,7 +43,7 @@ final class Router: ObservableObject {
         if isLocal {
             if busy {
                 if tun?.stopping == true { return "Восстанавливаем системные маршруты…" }
-                if preparingPermission { return "Подтверди настройку SplitWeb в окне macOS" }
+                if preparingPermission { return "Подтверди настройку SplitLane в окне macOS" }
                 return isProxyMode && proxyPermission
                     ? "Применяем сетевые настройки…" : "Может потребоваться пароль Mac"
             }
@@ -194,7 +194,7 @@ final class Router: ObservableObject {
             let process = ProcessInfo.processInfo
             // Keep status updates timely while the menu bar panel is closed.
             let activity = process.beginActivity(options: .userInitiatedAllowingIdleSystemSleep,
-                                                 reason: "SplitWebOnMac routing")
+                                                 reason: "SplitLane routing")
             defer {
                 process.endActivity(activity)
                 tun = nil
@@ -293,10 +293,10 @@ final class Router: ObservableObject {
                 let proxy = try await loadManager() ?? NETransparentProxyManager()
                 let config = NETunnelProviderProtocol()
                 config.providerBundleIdentifier = extensionID
-                config.serverAddress = "SplitWebOnMac"
+                config.serverAddress = "SplitLane"
                 config.providerConfiguration = [RuleConfiguration.key: data]
                 proxy.protocolConfiguration = config
-                proxy.localizedDescription = "SplitWebOnMac"
+                proxy.localizedDescription = "SplitLane"
                 proxy.isEnabled = enable
                 try await proxy.saveToPreferences()
                 manager = proxy
@@ -343,7 +343,7 @@ private final class ExtensionActivation: NSObject, @preconcurrency OSSystemExten
             pending?.resume()
             clear()
         } else {
-            self.request(request, didFailWithError: NSError(domain: "SplitWebOnMac", code: 1, userInfo: [
+            self.request(request, didFailWithError: NSError(domain: "SplitLane", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "Для подключения расширения перезагрузи Mac."
             ]))
         }

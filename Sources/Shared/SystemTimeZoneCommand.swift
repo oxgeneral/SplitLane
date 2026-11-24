@@ -2,7 +2,7 @@ import Foundation
 
 enum SystemTimeZoneCommand {
     static let preference = "systemTimeZoneWhileRouting"
-    static let journal = "/var/db/local.splitwebonmac.time-zone-restore.json"
+    static let journal = "/var/db/local.splitlane.time-zone-restore.json"
 
     static func run(_ arguments: [String]) throws {
         let process = Process()
@@ -16,7 +16,7 @@ enum SystemTimeZoneCommand {
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {
             let detail = stderr.isEmpty ? "Не удалось изменить системный часовой пояс." : stderr
-            throw NSError(domain: "SplitWebOnMac", code: 1,
+            throw NSError(domain: "SplitLane", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: detail])
         }
     }
@@ -35,7 +35,7 @@ enum SystemTimeZoneCommand {
             ObjC.bindFunction("notify_post", ["unsigned int", ["char *"]]);
 
             const files = $.NSFileManager.defaultManager;
-            const journal = "/var/db/local.splitwebonmac.time-zone-restore.json";
+            const journal = "/var/db/local.splitlane.time-zone-restore.json";
             const zoneDirectory = "/var/db/timezone/zoneinfo/";
             const localtime = "/private/etc/localtime";
             function currentZone() {
@@ -52,7 +52,7 @@ enum SystemTimeZoneCommand {
                 if (!validZone(zone)) throw new Error("Недоступный часовой пояс.");
                 if (currentZone() === zone) return;
                 // Keep the previous link in place until its replacement is ready.
-                const staged = localtime + ".splitweb-" + ObjC.unwrap($.NSUUID.UUID.UUIDString);
+                const staged = localtime + ".splitlane-" + ObjC.unwrap($.NSUUID.UUID.UUIDString);
                 if (!files.createSymbolicLinkAtPathWithDestinationPathError(staged, zoneDirectory + zone, null)) {
                     throw new Error("Не удалось подготовить часовой пояс " + zone + ".");
                 }

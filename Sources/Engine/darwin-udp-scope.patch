@@ -4,8 +4,8 @@
  	fallbackNetworkType    []C.InterfaceType
  	networkFallbackDelay   time.Duration
  	networkLastFallback    common.TypedValue[time.Time]
-+	splitWebOriginalUDP    bool
-+	splitWebOriginalScope  bool
++	splitLaneOriginalUDP   bool
++	splitLaneOriginalScope bool
  }
  
  func NewDefault(ctx context.Context, options option.DialerOptions) (*DefaultDialer, error) {
@@ -14,10 +14,10 @@
  		interfaceFinder = control.NewDefaultInterfaceFinder()
  	}
 -	if options.BindInterface != "" {
-+	splitWebOriginalUDP := options.BindInterface == splitWebOriginalUDPInterface
-+	splitWebOriginalScope := options.BindInterface == splitWebOriginalScopeInterface
-+	if splitWebOriginalUDP || splitWebOriginalScope {
-+		dialer.Control = rejectSplitWebUnscopedUDP
++	splitLaneOriginalUDP := options.BindInterface == splitLaneOriginalUDPInterface
++	splitLaneOriginalScope := options.BindInterface == splitLaneOriginalScopeInterface
++	if splitLaneOriginalUDP || splitLaneOriginalScope {
++		dialer.Control = rejectSplitLaneUnscopedUDP
 +	} else if options.BindInterface != "" {
  		if !(C.IsLinux || C.IsDarwin || C.IsWindows) {
  			return nil, E.New("`bind_interface` is only supported on Linux, macOS and Windows")
@@ -26,8 +26,8 @@
  		networkType:            networkType,
  		fallbackNetworkType:    fallbackNetworkType,
  		networkFallbackDelay:   networkFallbackDelay,
-+		splitWebOriginalUDP:    splitWebOriginalUDP,
-+		splitWebOriginalScope:  splitWebOriginalScope,
++		splitLaneOriginalUDP:   splitLaneOriginalUDP,
++		splitLaneOriginalScope: splitLaneOriginalScope,
  	}, nil
  }
  
@@ -35,11 +35,11 @@
  }
  
  func (d *DefaultDialer) DialContext(ctx context.Context, network string, address M.Socksaddr) (net.Conn, error) {
-+	if d.splitWebOriginalScope {
-+		return d.dialSplitWebOriginalTCP(ctx, network, address)
++	if d.splitLaneOriginalScope {
++		return d.dialSplitLaneOriginalTCP(ctx, network, address)
 +	}
-+	if d.splitWebOriginalUDP {
-+		return nil, errSplitWebUDPScope
++	if d.splitLaneOriginalUDP {
++		return nil, errSplitLaneUDPScope
 +	}
  	if !address.IsValid() {
  		return nil, E.New("invalid address")
@@ -48,7 +48,7 @@
  }
  
  func (d *DefaultDialer) DialParallelInterface(ctx context.Context, network string, address M.Socksaddr, strategy *C.NetworkStrategy, interfaceType []C.InterfaceType, fallbackInterfaceType []C.InterfaceType, fallbackDelay time.Duration) (net.Conn, error) {
-+	if d.splitWebOriginalScope || d.splitWebOriginalUDP {
++	if d.splitLaneOriginalScope || d.splitLaneOriginalUDP {
 +		return d.DialContext(ctx, network, address)
 +	}
  	if strategy == nil {
@@ -59,10 +59,10 @@
  
  func (d *DefaultDialer) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
 -	if d.networkStrategy == nil {
-+	if d.networkStrategy == nil || d.splitWebOriginalUDP || d.splitWebOriginalScope {
++	if d.networkStrategy == nil || d.splitLaneOriginalUDP || d.splitLaneOriginalScope {
  		packetConn, err := listener.ListenNetworkNamespace[net.PacketConn](ctx, d.netns, func() (net.PacketConn, error) {
-+			if d.splitWebOriginalUDP || d.splitWebOriginalScope {
-+				return d.listenSplitWebOriginalUDP(ctx, destination)
++			if d.splitLaneOriginalUDP || d.splitLaneOriginalScope {
++				return d.listenSplitLaneOriginalUDP(ctx, destination)
 +			}
  			listenConfig := d.udpListener
  			if d.autoDetectBindFunc != nil {
@@ -72,7 +72,7 @@
  		strategy = d.networkStrategy
  	}
 -	if strategy == nil {
-+	if strategy == nil || d.splitWebOriginalUDP || d.splitWebOriginalScope {
++	if strategy == nil || d.splitLaneOriginalUDP || d.splitLaneOriginalScope {
  		return d.ListenPacket(ctx, destination)
  	}
  	if len(interfaceType) == 0 {
@@ -80,8 +80,8 @@
  }
  
  func (d *DefaultDialer) UDPListenerControl() (control.Func, bool) {
-+	if d.splitWebOriginalUDP || d.splitWebOriginalScope {
-+		return rejectSplitWebUnscopedUDP, false
++	if d.splitLaneOriginalUDP || d.splitLaneOriginalScope {
++		return rejectSplitLaneUnscopedUDP, false
 +	}
  	egressEnabled := d.autoDetectBindFunc != nil && d.netns == ""
  	listenerControl := d.udpListener.Control

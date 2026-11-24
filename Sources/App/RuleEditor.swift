@@ -34,7 +34,7 @@ func groupApps(from urls: [URL], knownApps: [GroupApp] = []) async -> [GroupApp]
             if let known = knownByPath[resolved.path] { return known }
             guard resolved.pathExtension == "app", let bundle = Bundle(url: resolved),
                   let identifier = bundle.bundleIdentifier,
-                  identifier != ownID, identifier != "local.splitwebonmac.amnezia" else { return nil }
+                  identifier != ownID, identifier != "local.splitlane.amnezia" else { return nil }
 
             var code: SecStaticCode?
             var signingInfo: CFDictionary?
@@ -276,7 +276,7 @@ struct GroupEditor: View {
             }
             .disabled(choosingApps)
             if invalidSelection {
-                Text("Выбери приложение .app. Сам SplitWebOnMac в группу добавить нельзя.")
+                Text("Выбери приложение .app. Сам SplitLane в группу добавить нельзя.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else if selectedApps.isEmpty {
@@ -343,7 +343,7 @@ struct GroupEditor: View {
                 }
                 physicalNetworkHint
             } else if group.route.kind == .amnezia {
-                Text("Нужна сборка AmneziaVPN с режимом для SplitWeb. Пока её выход закрыт, запросы группы будут блокироваться.")
+                Text("Нужна сборка AmneziaVPN с режимом для SplitLane. Пока её выход закрыт, запросы группы будут блокироваться.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             } else if !networksLoaded {
@@ -474,7 +474,7 @@ struct GroupEditor: View {
                 }
             }
             if group.timeZoneIdentifier != nil {
-                Text("Нажми «Открыть с поясом» рядом с приложением в SplitWeb. Настройка передаётся при новом запуске.")
+                Text("Нажми «Открыть с поясом» рядом с приложением в SplitLane. Настройка передаётся при новом запуске.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

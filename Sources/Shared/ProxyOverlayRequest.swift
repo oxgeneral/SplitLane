@@ -32,16 +32,16 @@ struct ProxyOverlayRequest {
             throw Self.failure("Неверные параметры запуска системного прокси.")
         }
         let lease = URL(fileURLWithPath: args[1])
-        let sessionName = "splitwebonmac-\(token.uuidString)"
+        let sessionName = "splitlane-\(token.uuidString)"
         if authorized || protected {
             guard lease.lastPathComponent == "lease", lease.deletingLastPathComponent().lastPathComponent == sessionName,
                   lease.path.hasPrefix("/var/folders/") || lease.path.hasPrefix("/private/var/folders/") else {
-                throw Self.failure("Неверный путь к активной сессии SplitWebOnMac.")
+                throw Self.failure("Неверный путь к активной сессии SplitLane.")
             }
         }
         if protected {
             guard let owner = uid_t(args[6]), owner > 0 else {
-                throw Self.failure("Нет разрешения на управление сетевым фильтром SplitWeb.")
+                throw Self.failure("Нет разрешения на управление сетевым фильтром SplitLane.")
             }
             packetCaptureOwner = owner
         } else {
@@ -55,6 +55,6 @@ struct ProxyOverlayRequest {
     }
 
     private static func failure(_ message: String) -> NSError {
-        NSError(domain: "SplitWebOnMac.ProxyOverlay", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+        NSError(domain: "SplitLane.ProxyOverlay", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
     }
 }

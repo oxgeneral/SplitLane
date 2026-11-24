@@ -35,14 +35,14 @@ final class TunSession {
         managesTimeZone = timeZone != nil || FileManager.default.fileExists(atPath: SystemTimeZoneCommand.journal)
         let bundle = Bundle.main
         guard let engine = bundle.url(forAuxiliaryExecutable: "sing-box"),
-              let engineSHA = bundle.object(forInfoDictionaryKey: "SplitWebEngineSHA") as? String else {
+              let engineSHA = bundle.object(forInfoDictionaryKey: "SplitLaneEngineSHA") as? String else {
             throw TunConfiguration.failure("В сборке отсутствует сетевой движок.")
         }
 
         let token = UUID().uuidString
-        directory = FileManager.default.temporaryDirectory.appendingPathComponent("splitwebonmac-\(token)")
+        directory = FileManager.default.temporaryDirectory.appendingPathComponent("splitlane-\(token)")
         lease = directory.appendingPathComponent("lease")
-        ready = URL(fileURLWithPath: "/private/tmp/splitwebonmac-\(token)/ready")
+        ready = URL(fileURLWithPath: "/private/tmp/splitlane-\(token)/ready")
         let configURL = directory.appendingPathComponent("config.json")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
                                                 attributes: [.posixPermissions: 0o700])
@@ -57,13 +57,13 @@ final class TunSession {
             var launch = AdministratorCommand.prepare
             switch configuration {
             case .tun(let tun):
-                args += ["/bin/bash", "-c", try Self.worker("run-tun"), "splitwebonmac",
+                args += ["/bin/bash", "-c", try Self.worker("run-tun"), "splitlane",
                          engine.path, engineSHA, configURL.path, configSHA, lease.path, token,
                          TunConfiguration.ipv4Address, tun.systemIPv4, tun.systemIPv6 ?? "",
                          SystemTimeZoneCommand.script, timeZone ?? ""] + tun.interfaces
             case .proxy(let configuration):
                 guard let helper = bundle.url(forAuxiliaryExecutable: "proxy-overlay"),
-                      let helperSHA = bundle.object(forInfoDictionaryKey: "SplitWebProxyOverlaySHA") as? String else {
+                      let helperSHA = bundle.object(forInfoDictionaryKey: "SplitLaneProxyOverlaySHA") as? String else {
                     throw TunConfiguration.failure("В сборке отсутствует настройка системного прокси.")
                 }
                 let protected = !configuration.packetRules.isEmpty
@@ -76,7 +76,7 @@ final class TunSession {
                 }
                 let child = Process()
                 child.executableURL = URL(fileURLWithPath: "/bin/bash")
-                child.arguments = ["-c", try Self.worker("run-engine"), "splitwebonmac",
+                child.arguments = ["-c", try Self.worker("run-engine"), "splitlane",
                                    engine.path, configURL.path, lease.path, String(getpid())]
                 child.standardOutput = FileHandle.nullDevice
                 child.standardError = FileHandle.nullDevice
@@ -93,7 +93,7 @@ final class TunSession {
                         process.arguments = args
                     }
                 } else {
-                    args += ["/bin/bash", "-c", try Self.worker("run-proxy"), "splitwebonmac", helper.path, helperSHA]
+                    args += ["/bin/bash", "-c", try Self.worker("run-proxy"), "splitlane", helper.path, helperSHA]
                     if protected { args += [engine.path, engineSHA] }
                     args += overlayArgs
                 }
@@ -138,15 +138,15 @@ final class TunSession {
         let anotherSessionOwnsLock = error.contains("lockf:")
         if managesTimeZone, FileManager.default.fileExists(atPath: SystemTimeZoneCommand.journal),
            !cancelled, !anotherSessionOwnsLock {
-            return "macOS пока не восстановила часовой пояс. SplitWeb повторит восстановление при следующем включении правил."
+            return "macOS пока не восстановила часовой пояс. SplitLane повторит восстановление при следующем включении правил."
         }
-        if proxy != nil, FileManager.default.fileExists(atPath: "/var/db/local.splitwebonmac.proxy-restore.plist"),
+        if proxy != nil, FileManager.default.fileExists(atPath: "/var/db/local.splitlane.proxy-restore.plist"),
            !cancelled, !anotherSessionOwnsLock {
             return "macOS пока не восстановила прежние настройки прокси. Резервная копия сохранена."
         }
         guard !wantsStop, process.terminationStatus != 0 else { return nil }
         if cancelled { return "Запуск отменён. Нажми «Включить правила», чтобы попробовать снова." }
-        if anotherSessionOwnsLock { return "Другая копия SplitWebOnMac уже управляет маршрутами. Выключи правила в ней и попробуй снова." }
+        if anotherSessionOwnsLock { return "Другая копия SplitLane уже управляет маршрутами. Выключи правила в ней и попробуй снова." }
         if let explanation = AdministratorCommand.denialExplanation(error) { return explanation }
         return error.isEmpty ? "Не удалось включить сетевой движок." : error
     }
@@ -161,7 +161,7 @@ final class TunSession {
 }
 
 enum AdministratorCommand {
-    static let lock = ["/usr/bin/lockf", "-k", "-t", "0", "/var/run/local.splitwebonmac.lock"]
+    static let lock = ["/usr/bin/lockf", "-k", "-t", "0", "/var/run/local.splitlane.lock"]
 
     static func wasCancelled(_ message: String) -> Bool {
         message.contains("(-128)") || message.contains("(-60006)")
@@ -172,7 +172,7 @@ enum AdministratorCommand {
             return "macOS не разрешила изменить настройки сети. Попробуй снова и введи имя и пароль администратора этого Mac."
         }
         if message.contains("(-60007)") {
-            return "macOS не смогла показать запрос разрешения. Открой панель SplitWebOnMac и попробуй снова."
+            return "macOS не смогла показать запрос разрешения. Открой панель SplitLane и попробуй снова."
         }
         return nil
     }
@@ -190,17 +190,17 @@ enum AdministratorCommand {
 }
 
 enum ProxyPermission {
-    static var helper: String { "/Library/PrivilegedHelperTools/local.splitwebonmac.proxy-overlay.\(getuid())" }
+    static var helper: String { "/Library/PrivilegedHelperTools/local.splitlane.proxy-overlay.\(getuid())" }
 
     static var isInstalled: Bool {
         FileManager.default.isExecutableFile(atPath: helper) &&
-            FileManager.default.fileExists(atPath: "/private/etc/sudoers.d/local-splitwebonmac-\(getuid())")
+            FileManager.default.fileExists(atPath: "/private/etc/sudoers.d/local-splitlane-\(getuid())")
     }
 
     static var matchesCurrentBuild: Bool {
         guard isInstalled, FileManager.default.isExecutableFile(atPath: helper + ".engine"),
-              let digest = Bundle.main.object(forInfoDictionaryKey: "SplitWebProxyOverlaySHA") as? String,
-              let engineDigest = Bundle.main.object(forInfoDictionaryKey: "SplitWebEngineSHA") as? String else { return false }
+              let digest = Bundle.main.object(forInfoDictionaryKey: "SplitLaneProxyOverlaySHA") as? String,
+              let engineDigest = Bundle.main.object(forInfoDictionaryKey: "SplitLaneEngineSHA") as? String else { return false }
         return [(helper, digest), (helper + ".engine", engineDigest)].allSatisfy { path, expected in
             guard let data = try? Data(contentsOf: URL(fileURLWithPath: path), options: .mappedIfSafe) else { return false }
             return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() == expected
@@ -211,13 +211,13 @@ enum ProxyPermission {
         let process = Process()
         let output = Pipe()
         let worker = try TunSession.worker("proxy-permission")
-        var args = AdministratorCommand.lock + ["/bin/bash", "-c", worker, "splitwebonmac",
+        var args = AdministratorCommand.lock + ["/bin/bash", "-c", worker, "splitlane",
                                                 installed ? "install" : "remove", String(getuid())]
         if installed {
             guard let source = Bundle.main.url(forAuxiliaryExecutable: "proxy-overlay"),
-                  let digest = Bundle.main.object(forInfoDictionaryKey: "SplitWebProxyOverlaySHA") as? String,
+                  let digest = Bundle.main.object(forInfoDictionaryKey: "SplitLaneProxyOverlaySHA") as? String,
                   let engine = Bundle.main.url(forAuxiliaryExecutable: "sing-box"),
-                  let engineDigest = Bundle.main.object(forInfoDictionaryKey: "SplitWebEngineSHA") as? String else {
+                  let engineDigest = Bundle.main.object(forInfoDictionaryKey: "SplitLaneEngineSHA") as? String else {
                 throw TunConfiguration.failure("В сборке отсутствует настройка системного прокси.")
             }
             args += [source.path, digest, String(ProxyRoutingConfiguration.port), engine.path, engineDigest]

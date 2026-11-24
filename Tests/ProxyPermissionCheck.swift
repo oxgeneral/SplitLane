@@ -6,7 +6,7 @@ enum ProxyPermissionCheck {
         let port = String(ProxyRoutingConfiguration.port)
         let user = "501"
         let zone = "America/Argentina/Buenos_Aires"
-        let base = [token, "/var/folders/test/splitwebonmac-\(token)/lease", port, "2", "3"]
+        let base = [token, "/var/folders/test/splitlane-\(token)/lease", port, "2", "3"]
         let protection = ["protect", user]
         let timeZone = ["zone", zone]
         let timeZoneOptions = [[], timeZone]
@@ -41,9 +41,9 @@ enum ProxyPermissionCheck {
         let script = URL(fileURLWithPath: "Sources/Engine/proxy-permission.sh")
         let digest = String(repeating: "a", count: 64)
         let policy = try command("/bin/bash", ["-c", #"source "$1"; permission_rule "$2" "$3" "$4""#,
-                                               "splitweb-permission-test", script.path, user, digest, port])
+                                               "splitlane-permission-test", script.path, user, digest, port])
         precondition(policy.status == 0, policy.output)
-        precondition(policy.output.hasPrefix("#\(user) ALL=(root) NOPASSWD: sha256:\(digest) /Library/PrivilegedHelperTools/local.splitwebonmac.proxy-overlay.\(user) ^"))
+        precondition(policy.output.hasPrefix("#\(user) ALL=(root) NOPASSWD: sha256:\(digest) /Library/PrivilegedHelperTools/local.splitlane.proxy-overlay.\(user) ^"))
         let start = policy.output.firstIndex(of: "^")!
         let pattern = policy.output[start...].trimmingCharacters(in: .newlines)
         for arguments in [authorized, authorized + timeZone, authorized + protection, authorized + protection + timeZone,
@@ -61,14 +61,14 @@ enum ProxyPermissionCheck {
             precondition(arguments.joined(separator: " ").range(of: pattern, options: .regularExpression) == nil)
         }
 
-        let file = FileManager.default.temporaryDirectory.appendingPathComponent("splitweb-permission-test-\(UUID())")
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("splitlane-permission-test-\(UUID())")
         defer { try? FileManager.default.removeItem(at: file) }
         try policy.output.write(to: file, atomically: true, encoding: .utf8)
         let parsed = try command("/usr/sbin/visudo", ["-cf", file.path])
         precondition(parsed.status == 0, parsed.output)
 
         let worker = try String(contentsOf: script, encoding: .utf8)
-        for args in [[script.path], ["-c", worker, "splitwebonmac"]] {
+        for args in [[script.path], ["-c", worker, "splitlane"]] {
             let rejected = try command("/bin/bash", args + ["invalid-test-action", user])
             precondition(rejected.status == 1 && rejected.output.isEmpty, rejected.output)
         }

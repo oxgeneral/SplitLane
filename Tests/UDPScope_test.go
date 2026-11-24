@@ -38,21 +38,21 @@ func TestUDPScopeRequiresUniqueActiveSource(t *testing.T) {
 		name     string
 		source   netip.Addr
 		messages []route.Message
-		want     splitWebUDPScope
+		want     splitLaneUDPScope
 	}{
-		{"IPv4", v4, []route.Message{physical, udpScopeTestAddress(4, v4), vpn}, splitWebUDPScope{"en0", 4}},
-		{"IPv6", v6, []route.Message{udpScopeTestAddress(21, v6), vpn}, splitWebUDPScope{"utun5", 21}},
-		{"moved", v4, []route.Message{physical, vpn, udpScopeTestAddress(21, v4)}, splitWebUDPScope{"utun5", 21}},
-		{"duplicate on same interface", v4, []route.Message{physical, udpScopeTestAddress(4, v4), udpScopeTestAddress(4, v4)}, splitWebUDPScope{"en0", 4}},
-		{"missing", v4, []route.Message{physical, udpScopeTestAddress(4, v4.Next())}, splitWebUDPScope{}},
-		{"ambiguous", v4, []route.Message{physical, udpScopeTestAddress(4, v4), vpn, udpScopeTestAddress(21, v4)}, splitWebUDPScope{}},
-		{"down", v4, []route.Message{down, udpScopeTestAddress(21, v4)}, splitWebUDPScope{}},
-		{"down duplicate does not block active", v4, []route.Message{physical, udpScopeTestAddress(4, v4), down, udpScopeTestAddress(21, v4)}, splitWebUDPScope{"en0", 4}},
-		{"loopback", v4, []route.Message{loopback, udpScopeTestAddress(1, v4)}, splitWebUDPScope{}},
-		{"own TUN", splitWebCaptureIPv6, []route.Message{vpn, udpScopeTestAddress(21, splitWebCaptureIPv6)}, splitWebUDPScope{}},
+		{"IPv4", v4, []route.Message{physical, udpScopeTestAddress(4, v4), vpn}, splitLaneUDPScope{"en0", 4}},
+		{"IPv6", v6, []route.Message{udpScopeTestAddress(21, v6), vpn}, splitLaneUDPScope{"utun5", 21}},
+		{"moved", v4, []route.Message{physical, vpn, udpScopeTestAddress(21, v4)}, splitLaneUDPScope{"utun5", 21}},
+		{"duplicate on same interface", v4, []route.Message{physical, udpScopeTestAddress(4, v4), udpScopeTestAddress(4, v4)}, splitLaneUDPScope{"en0", 4}},
+		{"missing", v4, []route.Message{physical, udpScopeTestAddress(4, v4.Next())}, splitLaneUDPScope{}},
+		{"ambiguous", v4, []route.Message{physical, udpScopeTestAddress(4, v4), vpn, udpScopeTestAddress(21, v4)}, splitLaneUDPScope{}},
+		{"down", v4, []route.Message{down, udpScopeTestAddress(21, v4)}, splitLaneUDPScope{}},
+		{"down duplicate does not block active", v4, []route.Message{physical, udpScopeTestAddress(4, v4), down, udpScopeTestAddress(21, v4)}, splitLaneUDPScope{"en0", 4}},
+		{"loopback", v4, []route.Message{loopback, udpScopeTestAddress(1, v4)}, splitLaneUDPScope{}},
+		{"own TUN", splitLaneCaptureIPv6, []route.Message{vpn, udpScopeTestAddress(21, splitLaneCaptureIPv6)}, splitLaneUDPScope{}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := findSplitWebUDPScope(test.messages, test.source)
+			got, err := findSplitLaneUDPScope(test.messages, test.source)
 			if got != test.want || (err == nil) != (test.want.index > 0) {
 				t.Fatalf("got %+v, %v, want %+v", got, err, test.want)
 			}
@@ -66,12 +66,12 @@ func TestUDPScopeLocalEchoClosesAfterChange(t *testing.T) {
 			local := udpScopeTestSocket(t)
 			peer := udpScopeTestSocket(t)
 			source := netip.MustParseAddr("192.0.2.20")
-			current := splitWebUDPScope{"utun5", 21}
-			scoped := &splitWebScopedUDPConn{
+			current := splitLaneUDPScope{"utun5", 21}
+			scoped := &splitLaneScopedUDPConn{
 				PacketConn: local,
 				scope:      current,
 				source:     source,
-				lookup: func(addr netip.Addr) (splitWebUDPScope, error) {
+				lookup: func(addr netip.Addr) (splitLaneUDPScope, error) {
 					if addr != source {
 						t.Fatalf("lookup used %v instead of %v", addr, source)
 					}
@@ -105,7 +105,7 @@ func TestUDPScopeLocalEchoClosesAfterChange(t *testing.T) {
 				current.index++
 				n, _, err = scoped.ReadFrom(buffer)
 			}
-			if n != 0 || !errors.Is(err, errSplitWebUDPScope) {
+			if n != 0 || !errors.Is(err, errSplitLaneUDPScope) {
 				t.Fatalf("changed interface passed %d bytes, %v", n, err)
 			}
 			if err := local.SetDeadline(time.Now()); !errors.Is(err, net.ErrClosed) {
@@ -131,16 +131,16 @@ func udpScopeTestSocket(t *testing.T) net.PacketConn {
 func TestUDPScopeDialerBindsAddressAndInterface(t *testing.T) {
 	ctx := context.Background()
 	d, err := NewDefault(ctx, option.DialerOptions{
-		AbstractDialerOptions: option.AbstractDialerOptions{BindInterface: splitWebOriginalUDPInterface},
+		AbstractDialerOptions: option.AbstractDialerOptions{BindInterface: splitLaneOriginalUDPInterface},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	peer := M.ParseSocksaddr("192.0.2.40:1234")
-	if conn, err := d.ListenPacket(ctx, peer); conn != nil || !errors.Is(err, errSplitWebUDPScope) {
+	if conn, err := d.ListenPacket(ctx, peer); conn != nil || !errors.Is(err, errSplitLaneUDPScope) {
 		t.Fatalf("listen without TUN source got %v, %v", conn, err)
 	}
-	if conn, err := d.DialContext(ctx, N.NetworkUDP, peer); conn != nil || !errors.Is(err, errSplitWebUDPScope) {
+	if conn, err := d.DialContext(ctx, N.NetworkUDP, peer); conn != nil || !errors.Is(err, errSplitLaneUDPScope) {
 		t.Fatalf("connected UDP got %v, %v", conn, err)
 	}
 	source, scope := udpScopeTestLiveAddress(t)
@@ -160,7 +160,7 @@ func TestUDPScopeDialerBindsAddressAndInterface(t *testing.T) {
 	if got := M.AddrFromNet(conn.LocalAddr()); got != source {
 		t.Fatalf("local address is %v, want %v", got, source)
 	}
-	fdConn := conn.(*splitWebScopedUDPConn).PacketConn.(*net.UDPConn)
+	fdConn := conn.(*splitLaneScopedUDPConn).PacketConn.(*net.UDPConn)
 	raw, err := fdConn.SyscallConn()
 	if err != nil {
 		t.Fatal(err)
@@ -183,7 +183,7 @@ func TestUDPScopeDialerBindsAddressAndInterface(t *testing.T) {
 func TestUDPScopeOriginalScopeTCPDial(t *testing.T) {
 	ctx := context.Background()
 	d, err := NewDefault(ctx, option.DialerOptions{
-		AbstractDialerOptions: option.AbstractDialerOptions{BindInterface: splitWebOriginalScopeInterface},
+		AbstractDialerOptions: option.AbstractDialerOptions{BindInterface: splitLaneOriginalScopeInterface},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -205,7 +205,7 @@ func TestUDPScopeOriginalScopeTCPDial(t *testing.T) {
 		}
 	}()
 	peer := M.SocksaddrFromNet(listener.Addr())
-	if conn, err := d.DialContext(ctx, N.NetworkTCP, peer); conn != nil || !errors.Is(err, errSplitWebUDPScope) {
+	if conn, err := d.DialContext(ctx, N.NetworkTCP, peer); conn != nil || !errors.Is(err, errSplitLaneUDPScope) {
 		t.Fatalf("TCP dial without TUN metadata got %v, %v", conn, err)
 	}
 	tcpCtx := adapter.WithContext(ctx, &adapter.InboundContext{
@@ -240,7 +240,7 @@ func TestUDPScopeOriginalScopeTCPDial(t *testing.T) {
 	}
 }
 
-func udpScopeTestLiveAddress(t testing.TB) (netip.Addr, splitWebUDPScope) {
+func udpScopeTestLiveAddress(t testing.TB) (netip.Addr, splitLaneUDPScope) {
 	t.Helper()
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
@@ -248,19 +248,19 @@ func udpScopeTestLiveAddress(t testing.TB) (netip.Addr, splitWebUDPScope) {
 	}
 	for _, addr := range addrs {
 		ip := M.AddrFromNet(addr).Unmap()
-		if scope, err := currentSplitWebUDPScope(ip); err == nil {
+		if scope, err := currentSplitLaneUDPScope(ip); err == nil {
 			return ip, scope
 		}
 	}
 	t.Skip("no unique local IPv4 or IPv6 interface address")
-	return netip.Addr{}, splitWebUDPScope{}
+	return netip.Addr{}, splitLaneUDPScope{}
 }
 
 func BenchmarkUDPScopeSnapshot(b *testing.B) {
 	source, want := udpScopeTestLiveAddress(b)
 	b.ResetTimer()
 	for range b.N {
-		got, err := currentSplitWebUDPScope(source)
+		got, err := currentSplitLaneUDPScope(source)
 		if err != nil || got != want {
 			b.Fatalf("network changed during the benchmark: got %+v, %v", got, err)
 		}

@@ -53,7 +53,7 @@ struct ProxyCredentials: Codable, Sendable {
     private static func item(_ id: UUID) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "local.splitwebonmac.proxy",
+            kSecAttrService as String: "local.splitlane.proxy",
             kSecAttrAccount as String: id.uuidString
         ]
     }

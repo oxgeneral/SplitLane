@@ -34,7 +34,7 @@ static unsigned int interfaceForService(CFStringRef id) {
 	return index;
 }
 
-static int splitWebVPNInterface(const char *target, bool service) {
+static int splitLaneVPNInterface(const char *target, bool service) {
 	CFStringRef names = CFStringCreateWithCString(NULL, target, kCFStringEncodingUTF8);
 	if (!names) return 0;
 	if (service) {
@@ -46,7 +46,7 @@ static int splitWebVPNInterface(const char *target, bool service) {
 	CFRelease(names);
 	if (!allowed) return 0;
 
-	SCPreferencesRef preferences = SCPreferencesCreate(NULL, CFSTR("SplitWebOnMac"), NULL);
+	SCPreferencesRef preferences = SCPreferencesCreate(NULL, CFSTR("SplitLane"), NULL);
 	CFArrayRef services = preferences ? SCNetworkServiceCopyAll(preferences) : NULL;
 	int index = 0;
 	for (CFIndex i = 0; services && i < CFArrayGetCount(services); i++) {
@@ -83,26 +83,26 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func splitWebBindInterface(finder control.InterfaceFinder, name string) control.Func {
-	if serviceID, ok := strings.CutPrefix(name, "splitweb-vpn-service:"); ok {
-		return splitWebVPNControl(serviceID, true, resolveSplitWebVPN)
+func splitLaneBindInterface(finder control.InterfaceFinder, name string) control.Func {
+	if serviceID, ok := strings.CutPrefix(name, "splitlane-vpn-service:"); ok {
+		return splitLaneVPNControl(serviceID, true, resolveSplitLaneVPN)
 	}
-	if providers, ok := strings.CutPrefix(name, "splitweb-vpn:"); ok {
-		return splitWebVPNControl(providers, false, resolveSplitWebVPN)
+	if providers, ok := strings.CutPrefix(name, "splitlane-vpn:"); ok {
+		return splitLaneVPNControl(providers, false, resolveSplitLaneVPN)
 	}
 	return control.BindToInterface(finder, name, -1)
 }
 
-func resolveSplitWebVPN(target string, service bool) int {
+func resolveSplitLaneVPN(target string, service bool) int {
 	if strings.IndexByte(target, 0) >= 0 {
 		return 0
 	}
 	name := C.CString(target)
 	defer C.free(unsafe.Pointer(name))
-	return int(C.splitWebVPNInterface(name, C.bool(service)))
+	return int(C.splitLaneVPNInterface(name, C.bool(service)))
 }
 
-func splitWebVPNControl(target string, service bool, resolve func(string, bool) int) control.Func {
+func splitLaneVPNControl(target string, service bool, resolve func(string, bool) int) control.Func {
 	return func(network, _ string, conn syscall.RawConn) error {
 		index := 0
 		if target != "" {

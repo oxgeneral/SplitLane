@@ -17,10 +17,10 @@ shift 2
 interfaces=("$@")
 
 [[ $token =~ ^[A-F0-9-]{36}$ ]]
-state="/private/tmp/splitwebonmac-$token"
+state="/private/tmp/splitlane-$token"
 private="$state/private"
 pid=
-zone_journal=/var/db/local.splitwebonmac.time-zone-restore.json
+zone_journal=/var/db/local.splitlane.time-zone-restore.json
 
 restore_zone() {
     if [[ -e $zone_journal ]]; then

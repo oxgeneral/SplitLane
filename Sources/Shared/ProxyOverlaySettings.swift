@@ -24,7 +24,7 @@ enum ProxyOverlaySettings {
               !hasProxy(state) || isLocalProxy(state, port: port),
               let bypass = settings["ExceptionsList"] as? [String],
               exceptions.allSatisfy(bypass.contains) else { return nil }
-        // The original values are unavailable without the journal. Disable only SplitWeb's endpoints.
+        // The original values are unavailable without the journal. Disable only SplitLane's endpoints.
         var baseline = settings
         for scheme in schemes { baseline[scheme + "Enable"] = 0 }
         return baseline

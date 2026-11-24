@@ -5,7 +5,7 @@ import NetworkExtension
 import Security
 
 final class Provider: NETransparentProxyProvider {
-    private let queue = DispatchQueue(label: "SplitWebOnMac.flows")
+    private let queue = DispatchQueue(label: "SplitLane.flows")
     private var rules: [AppRule] = []
     private var pathMonitor: NWPathMonitor?
     private var relays: [ObjectIdentifier: TCPRelay] = [:]

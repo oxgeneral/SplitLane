@@ -9,7 +9,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func TestSplitWebVPNServiceRebind(t *testing.T) {
+func TestSplitLaneVPNServiceRebind(t *testing.T) {
 	loopback, err := net.InterfaceByName("lo0")
 	if err != nil {
 		t.Fatal(err)
@@ -29,7 +29,7 @@ func TestSplitWebVPNServiceRebind(t *testing.T) {
 		t.Skip("interface rebind fixture needs two local interface indexes")
 	}
 	services := map[string]int{"service-a": loopback.Index, "service-b": other}
-	bind := splitWebVPNControl("service-a", true, func(id string, exact bool) int {
+	bind := splitLaneVPNControl("service-a", true, func(id string, exact bool) int {
 		if !exact || id != "service-a" {
 			t.Fatalf("expected exact service-a lookup, got %q (exact %v)", id, exact)
 		}
@@ -45,8 +45,8 @@ func TestSplitWebVPNServiceRebind(t *testing.T) {
 	checkVPNServiceBinding(t, bind, other)
 }
 
-func TestSplitWebVPNMissingService(t *testing.T) {
-	bind := splitWebBindInterface(nil, "splitweb-vpn-service:00000000-0000-0000-0000-000000000000")
+func TestSplitLaneVPNMissingService(t *testing.T) {
+	bind := splitLaneBindInterface(nil, "splitlane-vpn-service:00000000-0000-0000-0000-000000000000")
 	checkVPNServiceBinding(t, bind, 0)
 }
 

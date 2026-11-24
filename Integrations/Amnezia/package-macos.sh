@@ -15,12 +15,12 @@ output=$5
 mkdir -p "$output/Contents/MacOS"
 cp "$source_app/Contents/Info.plist" "$output/Contents/"
 cp "$source_app/Contents/MacOS/AmneziaVPN" "$output/Contents/MacOS/"
-cp "$helper" "$output/Contents/MacOS/splitweb-awg"
+cp "$helper" "$output/Contents/MacOS/splitlane-awg"
 ditto "$source_app/Contents/Resources" "$output/Contents/Resources"
 plist="$output/Contents/Info.plist"
-plutil -replace CFBundleIdentifier -string local.splitwebonmac.amnezia "$plist"
-plutil -replace CFBundleName -string "AmneziaVPN for SplitWeb" "$plist"
-plutil -replace CFBundleDisplayName -string "AmneziaVPN for SplitWeb" "$plist"
+plutil -replace CFBundleIdentifier -string local.splitlane.amnezia "$plist"
+plutil -replace CFBundleName -string "AmneziaVPN for SplitLane" "$plist"
+plutil -replace CFBundleDisplayName -string "AmneziaVPN for SplitLane" "$plist"
 if plutil -extract LSEnvironment xml1 -o - "$plist" >/dev/null 2>&1; then
     plutil -remove LSEnvironment "$plist"
 fi

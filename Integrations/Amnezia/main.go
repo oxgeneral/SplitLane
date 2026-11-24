@@ -87,7 +87,7 @@ func run() error {
 		return err
 	}
 	unix.Umask(0077)
-	return serve(ctx, engine.Router(), filepath.Join(base, "SplitWebOnMac"))
+	return serve(ctx, engine.Router(), filepath.Join(base, "SplitLane"))
 }
 
 func startEngine(ctx context.Context, options []byte) (*box.Box, error) {

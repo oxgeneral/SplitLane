@@ -42,20 +42,20 @@ struct ProxyRoutingConfiguration: Sendable {
                     dns.append(["type": "udp", "tag": "dns-\(tag)", "server": profile.dns, "detour": tag])
                 }
             } else if app.route.kind == .vpn {
-                outbounds.append(["type": "direct", "tag": tag, "bind_interface": "splitweb-vpn-service:" + app.route.target])
+                outbounds.append(["type": "direct", "tag": tag, "bind_interface": "splitlane-vpn-service:" + app.route.target])
                 dns.append(["type": "https", "tag": "dns-\(tag)", "server": "1.1.1.1", "detour": tag,
                             "tls": ["enabled": true, "server_name": "cloudflare-dns.com"]])
             } else if app.route.kind == .vpnApp {
                 let providers = vpnApplicationProviderIDs(bundleID: app.route.target).sorted()
                 let dnsTag = "dns-\(tag)"
                 outbounds.append(["type": "direct", "tag": tag,
-                                  "bind_interface": "splitweb-vpn:" + providers.joined(separator: "|")])
+                                  "bind_interface": "splitlane-vpn:" + providers.joined(separator: "|")])
                 // shortcut: encrypted public DNS until the selected VPN's resolver can be tracked per connection.
                 dns.append(["type": "https", "tag": dnsTag, "server": "1.1.1.1", "detour": tag,
                             "tls": ["enabled": true, "server_name": "cloudflare-dns.com"]])
             } else if app.route.kind == .amnezia {
                 outbounds.append(["type": "http", "tag": tag, "server": "127.0.0.1", "server_port": 1,
-                                  "bind_interface": "splitweb-amnezia"])
+                                  "bind_interface": "splitlane-amnezia"])
             } else {
                 var outbound = try TunConfiguration.makeOutbound(for: app)
                 outbound["tag"] = tag

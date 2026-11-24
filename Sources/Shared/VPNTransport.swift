@@ -8,7 +8,7 @@ struct VPNTransport {
     let excludedRoutes: [String]
 
     static func active() throws -> [VPNTransport] {
-        guard let preferences = SCPreferencesCreate(nil, "SplitWebOnMac" as CFString, nil),
+        guard let preferences = SCPreferencesCreate(nil, "SplitLane" as CFString, nil),
               let services = SCNetworkServiceCopyAll(preferences) as? [SCNetworkService] else { return [] }
         let profileIDs = Set(vpnProfiles().map(\.id))
         let active = services.compactMap { service -> (SCNetworkInterface, String, [String: Any])? in

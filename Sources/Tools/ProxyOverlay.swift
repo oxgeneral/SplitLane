@@ -4,8 +4,8 @@ import SystemConfiguration
 
 @main
 struct ProxyOverlay {
-    private static let journal = URL(fileURLWithPath: "/var/db/local.splitwebonmac.proxy-restore.plist")
-    private static let log = Logger(subsystem: "local.splitwebonmac", category: "proxy")
+    private static let journal = URL(fileURLWithPath: "/var/db/local.splitlane.proxy-restore.plist")
+    private static let log = Logger(subsystem: "local.splitlane", category: "proxy")
 
     static func main() {
         do { try run() }
@@ -27,14 +27,14 @@ struct ProxyOverlay {
                 throw failure("Нет разрешения на управление системным прокси.")
             }
             owner = uid
-            lock = open("/var/run/local.splitwebonmac.lock", O_RDONLY | O_CREAT | O_NOFOLLOW, 0o600)
+            lock = open("/var/run/local.splitlane.lock", O_RDONLY | O_CREAT | O_NOFOLLOW, 0o600)
             guard lock >= 0, flock(lock, LOCK_EX | LOCK_NB) == 0 else {
-                throw failure("Другая копия SplitWebOnMac уже управляет маршрутами.")
+                throw failure("Другая копия SplitLane уже управляет маршрутами.")
             }
         }
         if let uid = request.packetCaptureOwner {
             guard geteuid() == 0, !request.authorized || uid == owner else {
-                throw failure("Нет разрешения на управление сетевым фильтром SplitWeb.")
+                throw failure("Нет разрешения на управление сетевым фильтром SplitLane.")
             }
             owner = uid
         }
@@ -42,7 +42,7 @@ struct ProxyOverlay {
         let port = request.port
         let state = URL(fileURLWithPath: "/private/tmp/\(request.sessionName)")
         let ready = state.appendingPathComponent("ready")
-        guard let store = SCDynamicStoreCreate(nil, "SplitWebOnMac" as CFString, nil, nil) else {
+        guard let store = SCDynamicStoreCreate(nil, "SplitLane" as CFString, nil, nil) else {
             throw failure("Не удалось открыть сетевые настройки macOS.")
         }
         func restoreTimeZone() throws {
@@ -144,10 +144,10 @@ struct ProxyOverlay {
                 if !effective(port), activeServices == primaryServices(store) {
                     let current = SCDynamicStoreCopyProxies(nil) as? [String: Any] ?? [:]
                     if ProxyOverlaySettings.hasProxy(current) {
-                        log.error("The active system proxy no longer points to SplitWeb.")
+                        log.error("The active system proxy no longer points to SplitLane.")
                         throw failure("Системный прокси был изменён извне. Правила выключены.")
                     }
-                    log.notice("Re-applying SplitWeb proxy after network service reset.")
+                    log.notice("Re-applying SplitLane proxy after network service reset.")
                     activeServices = []
                 }
             }
@@ -169,7 +169,7 @@ struct ProxyOverlay {
                 return true
             }
         }
-        if let preferences = SCPreferencesCreate(nil, "SplitWebOnMac" as CFString, nil),
+        if let preferences = SCPreferencesCreate(nil, "SplitLane" as CFString, nil),
            let service = SCNetworkServiceCopy(preferences, id as CFString),
            let interface = SCNetworkServiceGetInterface(service),
            let type = SCNetworkInterfaceGetInterfaceType(interface) as String? {
@@ -261,7 +261,7 @@ struct ProxyOverlay {
                           let cleaned = ProxyOverlaySettings.baseline(values, state: [:], port: ProxyOverlaySettings.port)
                     else { continue }
                     guard SCPreferencesPathSetValue(preferences, path, cleaned as CFDictionary) else {
-                        throw failure("Не удалось убрать прежний прокси SplitWeb из VPN-профиля.")
+                        throw failure("Не удалось убрать прежний прокси SplitLane из VPN-профиля.")
                     }
                     changed = true
                 }
@@ -286,7 +286,7 @@ struct ProxyOverlay {
     }
 
     private static func updatePreferencesIfChanged(_ update: (SCPreferences) throws -> Bool) throws {
-        guard let preferences = SCPreferencesCreate(nil, "SplitWebOnMac" as CFString, nil),
+        guard let preferences = SCPreferencesCreate(nil, "SplitLane" as CFString, nil),
               SCPreferencesLock(preferences, true) else {
             throw failure("Не удалось открыть настройки сети для изменения.")
         }
@@ -314,6 +314,6 @@ struct ProxyOverlay {
     }
 
     private static func failure(_ text: String) -> NSError {
-        NSError(domain: "SplitWebOnMac.Proxy", code: 1, userInfo: [NSLocalizedDescriptionKey: text])
+        NSError(domain: "SplitLane.Proxy", code: 1, userInfo: [NSLocalizedDescriptionKey: text])
     }
 }

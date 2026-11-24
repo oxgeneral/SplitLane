@@ -19,10 +19,10 @@ struct TunProbe {
     private static func appRules() throws -> [AppRule] {
         let args = Array(CommandLine.arguments.dropFirst())
         if args == ["--saved-rules"] {
-            let defaults = UserDefaults(suiteName: "local.splitwebonmac.preview")
+            let defaults = UserDefaults(suiteName: "local.splitlane.preview")
             guard let defaults, let groups = try? RouteGroups.load(from: defaults),
                   !groups.rules.isEmpty else {
-                throw TunConfiguration.failure("Сначала добавь правила в окне SplitWebOnMac.")
+                throw TunConfiguration.failure("Сначала добавь правила в окне SplitLane.")
             }
             return groups.rules
         }

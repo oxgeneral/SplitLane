@@ -4,17 +4,17 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 @main
-struct SplitWebApp {
+struct SplitLaneApp {
     @MainActor
     static func main() {
         let app = NSApplication.shared
-        let delegate = SplitWebDelegate()
+        let delegate = SplitLaneDelegate()
         app.delegate = delegate
 
         let menu = NSMenu()
         let appItem = NSMenuItem()
-        let appMenu = NSMenu(title: "SplitWebOnMac")
-        appMenu.addItem(withTitle: "Выйти из SplitWebOnMac", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let appMenu = NSMenu(title: "SplitLane")
+        appMenu.addItem(withTitle: "Выйти из SplitLane", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         menu.addItem(appItem)
 
@@ -33,15 +33,15 @@ struct SplitWebApp {
 }
 
 @MainActor
-private final class SplitWebDelegate: NSObject, NSApplicationDelegate {
+private final class SplitLaneDelegate: NSObject, NSApplicationDelegate {
     private let router = Router()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let panel = NSPopover()
     private var mainWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        statusItem.button?.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: "SplitWebOnMac")
-        statusItem.button?.toolTip = "SplitWebOnMac"
+        statusItem.button?.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: "SplitLane")
+        statusItem.button?.toolTip = "SplitLane"
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePanel)
 
@@ -119,7 +119,7 @@ private final class SplitWebDelegate: NSObject, NSApplicationDelegate {
             let screen = NSScreen.main?.visibleFrame.height ?? 600
             let host = NSHostingController(rootView: RoutesView(router: router, maxHeight: screen - 48))
             let window = NSWindow(contentViewController: host)
-            window.title = "SplitWebOnMac"
+            window.title = "SplitLane"
             window.styleMask = [.titled, .closable]
             window.isReleasedWhenClosed = false
             window.center()
@@ -395,7 +395,7 @@ struct RoutesView: View {
                         defer { choosingApp = false }
                         guard let apps = await pickGroupApps() else { return }
                         if apps.isEmpty {
-                            invalidAppMessage = "Выбери приложение .app. Сам SplitWebOnMac в группу добавить нельзя."
+                            invalidAppMessage = "Выбери приложение .app. Сам SplitLane в группу добавить нельзя."
                         } else {
                             router.assign(apps, to: group.id)
                         }
@@ -485,7 +485,7 @@ struct RoutesView: View {
             }
             let apps = await groupApps(from: urls, knownApps: router.routeGroups.groups.flatMap(\.apps))
             if apps.isEmpty {
-                invalidAppMessage = "Перетащи файлы .app из Finder. Сам SplitWebOnMac в группу добавить нельзя."
+                invalidAppMessage = "Перетащи файлы .app из Finder. Сам SplitLane в группу добавить нельзя."
             } else {
                 router.assign(apps, to: groupID)
             }
@@ -508,7 +508,7 @@ struct RoutesView: View {
     }
 
     private var bundledAmnezia: URL? {
-        let url = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/AmneziaVPN for SplitWeb.app")
+        let url = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/AmneziaVPN for SplitLane.app")
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
@@ -571,15 +571,15 @@ struct RoutesView: View {
                         .disabled(router.rulesLocked)
                         Divider()
                     }
-                    Button("Выйти из SplitWebOnMac") { NSApp.terminate(nil) }
+                    Button("Выйти из SplitLane") { NSApp.terminate(nil) }
                 } label: {
                     Image(systemName: "gearshape")
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
-                .accessibilityLabel("Настройки SplitWebOnMac")
-                .help("Настройки SplitWebOnMac")
+                .accessibilityLabel("Настройки SplitLane")
+                .help("Настройки SplitLane")
                 if router.canRoute && (router.wantsRouting || router.hasAssignedApps) {
                     Button(router.wantsRouting ? "Выключить правила" : router.startTitle) {
                         router.toggle()
@@ -661,7 +661,7 @@ private struct NetworkChoices: Equatable, Sendable {
 
     private static func amneziaRelayReady() -> Bool {
         let url = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/SplitWebOnMac/amnezia.sock")
+            .appendingPathComponent("Library/Application Support/SplitLane/amnezia.sock")
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         let count = withUnsafeMutableBytes(of: &address.sun_path) { buffer in

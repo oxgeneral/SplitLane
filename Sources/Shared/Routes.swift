@@ -96,7 +96,7 @@ func vpnProfiles() -> [NetworkChoice] {
 }
 
 private func vpnServices() -> [(choice: NetworkChoice, provider: String?)] {
-    guard let preferences = SCPreferencesCreate(nil, "SplitWebOnMac" as CFString, nil),
+    guard let preferences = SCPreferencesCreate(nil, "SplitLane" as CFString, nil),
           let services = SCNetworkServiceCopyAll(preferences) as? [SCNetworkService] else { return [] }
     let vpnTypes = ["VPN" as CFString, kSCNetworkInterfaceTypePPP, kSCNetworkInterfaceTypeIPSec]
     return services.compactMap { service in
@@ -213,7 +213,7 @@ func tcpParameters(for route: Route, interfaces: [NWInterface]) -> NWParameters?
             proxy = ProxyConfiguration(httpCONNECTProxy: endpoint, tlsOptions: tls)
         }
         proxy.allowFailover = false
-        let context = NWParameters.PrivacyContext(description: "SplitWebOnMac")
+        let context = NWParameters.PrivacyContext(description: "SplitLane")
         context.proxyConfigurations = [proxy]
         parameters.setPrivacyContext(context)
     }
@@ -245,7 +245,7 @@ enum RuleConfiguration {
         guard Set(rules.map(\.path)).count == rules.count,
               rules.allSatisfy({ $0.path.hasPrefix("/") && $0.path.hasSuffix(".app") &&
                   !$0.signingID.isEmpty && $0.route.isValid }) else {
-            throw NSError(domain: "SplitWebOnMac", code: 2, userInfo: [
+            throw NSError(domain: "SplitLane", code: 2, userInfo: [
                 NSLocalizedDescriptionKey: "В списке есть дубликат или правило с неверными параметрами."
             ])
         }

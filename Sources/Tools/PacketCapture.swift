@@ -1,8 +1,8 @@
 import Foundation
 
 final class PacketCapture {
-    private static let anchor = "com.apple/local.splitwebonmac.webrtc"
-    private static let journal = URL(fileURLWithPath: "/var/db/local.splitwebonmac.pf-token")
+    private static let anchor = "com.apple/local.splitlane.webrtc"
+    private static let journal = URL(fileURLWithPath: "/var/db/local.splitlane.pf-token")
 
     private let engine = Process()
     private let directory: URL
@@ -29,7 +29,7 @@ final class PacketCapture {
             }
             let mainRules = try Self.command("/sbin/pfctl", ["-sr"])
             guard mainRules.split(separator: "\n").contains("anchor \"com.apple/*\" all") else {
-                throw Self.failure("macOS не предоставила точку подключения сетевого фильтра SplitWeb.")
+                throw Self.failure("macOS не предоставила точку подключения сетевого фильтра SplitLane.")
             }
             let config = directory.appendingPathComponent("tun.json")
             try PacketRoutingConfiguration.make(apps: apps).write(to: config)
@@ -49,7 +49,7 @@ final class PacketCapture {
                 Thread.sleep(forTimeInterval: 0.15)
             }
             guard let tunnel, tunnel.range(of: #"^utun[0-9]+$"#, options: .regularExpression) != nil else {
-                throw Self.failure("Не удалось открыть виртуальный сетевой интерфейс SplitWeb.")
+                throw Self.failure("Не удалось открыть виртуальный сетевой интерфейс SplitLane.")
             }
             self.tunnel = tunnel
             let enabled = try Self.command("/sbin/pfctl", ["-E"])
@@ -69,14 +69,14 @@ final class PacketCapture {
     static func recover() throws {
         guard FileManager.default.fileExists(atPath: journal.path) else { return }
         let token = try String(contentsOf: journal, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard UInt64(token) != nil else { throw failure("Не удалось восстановить состояние сетевого фильтра SplitWeb.") }
+        guard UInt64(token) != nil else { throw failure("Не удалось восстановить состояние сетевого фильтра SplitLane.") }
         _ = try command("/sbin/pfctl", ["-a", anchor, "-F", "rules"])
         _ = try? command("/sbin/pfctl", ["-X", token])
         try FileManager.default.removeItem(at: journal)
     }
 
     func check() throws {
-        guard engine.isRunning else { throw Self.failure("Сетевой фильтр SplitWeb остановился. Правила выключены.") }
+        guard engine.isRunning else { throw Self.failure("Сетевой фильтр SplitLane остановился. Правила выключены.") }
         try updateFilter()
         guard ContinuousClock.now >= nextCheck else { return }
         let rules = try Self.command("/sbin/pfctl", ["-a", Self.anchor, "-sr"])
@@ -164,11 +164,11 @@ final class PacketCapture {
         try process.run()
         let output = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         process.waitUntilExit()
-        guard process.terminationStatus == 0 else { throw failure("Сетевой фильтр SplitWeb вернул ошибку. \(output)") }
+        guard process.terminationStatus == 0 else { throw failure("Сетевой фильтр SplitLane вернул ошибку. \(output)") }
         return output
     }
 
     private static func failure(_ message: String) -> NSError {
-        NSError(domain: "SplitWebOnMac.PacketCapture", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+        NSError(domain: "SplitLane.PacketCapture", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
     }
 }

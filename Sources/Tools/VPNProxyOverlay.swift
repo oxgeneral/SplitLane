@@ -13,7 +13,7 @@ struct VPNProxyOverlay {
     private var entries: [Entry] = []
 
     mutating func install(service: String, port: UInt16) throws {
-        guard let session = SCDynamicStoreCreate(nil, "SplitWeb VPN" as CFString, nil, nil) else {
+        guard let session = SCDynamicStoreCreate(nil, "SplitLane VPN" as CFString, nil, nil) else {
             throw Self.failure("Не удалось открыть временные настройки VPN.")
         }
         let key = "Setup:/Network/Service/\(service)/Proxies" as CFString
@@ -46,7 +46,7 @@ struct VPNProxyOverlay {
                     let restored = ProxyOverlaySettings.restoring(current, original: entry.previous ?? [:],
                                                                  installed: entry.installed)
                     if !NSDictionary(dictionary: current).isEqual(to: restored) {
-                        guard let publisher = SCDynamicStoreCreate(nil, "SplitWeb VPN restore" as CFString, nil, nil),
+                        guard let publisher = SCDynamicStoreCreate(nil, "SplitLane VPN restore" as CFString, nil, nil),
                               SCDynamicStoreSetValue(publisher, entry.key, restored as CFDictionary) else {
                             throw Self.failure("Не удалось восстановить временные настройки VPN.")
                         }
@@ -58,6 +58,6 @@ struct VPNProxyOverlay {
     }
 
     private static func failure(_ message: String) -> NSError {
-        NSError(domain: "SplitWebOnMac.VPNProxy", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+        NSError(domain: "SplitLane.VPNProxy", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
     }
 }

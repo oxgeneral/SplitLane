@@ -18,7 +18,7 @@ enum DefaultNetwork {
         tunnelPrefixes.contains { name.hasPrefix($0) }
     }
 
-    static func splitWebCaptureInterfaces() -> Set<String> {
+    static func splitLaneCaptureInterfaces() -> Set<String> {
         let reserved: Set<String> = [
             TunConfiguration.ipv4Address,
             TunConfiguration.ipv6Address,
@@ -74,14 +74,14 @@ enum DefaultNetwork {
     }
 
     static func currentInterface(family: String = "-inet",
-                                 excludedInterfaces: Set<String> = splitWebCaptureInterfaces()) -> String? {
+                                 excludedInterfaces: Set<String> = splitLaneCaptureInterfaces()) -> String? {
         let probes = family == "-inet6" ? ipv6Probes : ipv4Probes
         let results = probes.map { routeInterface(arguments: ["-n", "get", family, $0]) }
         let fallback = routeInterface(arguments: ["-n", "get", family, "default"])
         return selectDominantInterface(from: results, fallback: fallback, excluded: excludedInterfaces)
     }
 
-    static func activeVPNInterface(excludedInterfaces: Set<String> = splitWebCaptureInterfaces()) -> String? {
+    static func activeVPNInterface(excludedInterfaces: Set<String> = splitLaneCaptureInterfaces()) -> String? {
         for family in ["-inet", "-inet6"] {
             if let iface = currentInterface(family: family, excludedInterfaces: excludedInterfaces),
                isTunnelInterface(iface) {
@@ -93,7 +93,7 @@ enum DefaultNetwork {
 
     static func describeCurrent(interfaces: [NetworkChoice], vpns: [NetworkChoice], vpnApps: [NetworkChoice],
                                 profileInterfaces: [String: String], appInterfaces: [String: Set<String>]) -> String? {
-        let excluded = splitWebCaptureInterfaces()
+        let excluded = splitLaneCaptureInterfaces()
         let systemInterface = currentInterface(family: "-inet", excludedInterfaces: excluded)
             ?? currentInterface(family: "-inet6", excludedInterfaces: excluded)
         let dynamicServices = activeDynamicStoreServices()
@@ -208,7 +208,7 @@ enum DefaultNetwork {
     }
 
     private static func activeDynamicStoreServices() -> [DynamicStoreServiceInfo] {
-        guard let store = SCDynamicStoreCreate(nil, "SplitWebOnMac.default" as CFString, nil, nil),
+        guard let store = SCDynamicStoreCreate(nil, "SplitLane.default" as CFString, nil, nil),
               let keys = SCDynamicStoreCopyKeyList(store, "State:/Network/Service/.*/(IPv4|IPv6)" as CFString) as? [String]
         else { return [] }
         var seen: Set<String> = []

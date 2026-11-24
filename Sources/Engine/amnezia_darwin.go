@@ -14,8 +14,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func splitWebAmneziaDialer(binding string) N.Dialer {
-	if binding != "splitweb-amnezia" {
+func splitLaneAmneziaDialer(binding string) N.Dialer {
+	if binding != "splitlane-amnezia" {
 		return nil
 	}
 	return amneziaDialer{}
@@ -31,7 +31,7 @@ func (amneziaDialer) DialContext(ctx context.Context, network string, _ M.Socksa
 	if err != nil {
 		return nil, err
 	}
-	dir := filepath.Join(base, "SplitWebOnMac")
+	dir := filepath.Join(base, "SplitLane")
 	state, err := os.Lstat(dir)
 	if err != nil || !state.IsDir() || state.Mode().Perm()&0077 != 0 ||
 		state.Sys().(*syscall.Stat_t).Uid != uint32(os.Geteuid()) {

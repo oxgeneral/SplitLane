@@ -1,6 +1,6 @@
 set -euo pipefail
 umask 077
-dir="$(/usr/bin/mktemp -d /private/tmp/splitweb-proxy.XXXXXX)"
+dir="$(/usr/bin/mktemp -d /private/tmp/splitlane-proxy.XXXXXX)"
 cleanup() {
     [[ ! -e "$dir/overlay" ]] || /bin/rm "$dir/overlay"
     [[ ! -e "$dir/overlay.engine" ]] || /bin/rm "$dir/overlay.engine"

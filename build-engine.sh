@@ -23,21 +23,21 @@ chmod -R u+w "$stage/sing-box"
 cp Tests/DarwinUDPOwner_test.go "$stage/sing-box/common/process/"
 cp Tests/DarwinDNS_test.go "$stage/sing-box/dns/transport/local/systemconfig/"
 cp Sources/Engine/udp_owner_guard.go Tests/UDPOwnerGuard_test.go "$stage/sing-box/route/"
-cp Sources/Engine/webkit_darwin.go "$stage/sing-box/common/process/splitweb_webkit_darwin.go"
+cp Sources/Engine/webkit_darwin.go "$stage/sing-box/common/process/splitlane_webkit_darwin.go"
 lookup="$stage/sing-box/common/process/searcher_darwin_shared.go"
 grep -Fq 'owner.ProcessPath = processPath' "$lookup"
 sed -i '' 's/owner.ProcessPath = processPath/owner.ProcessPath = resolveWebKitOwner(entry.pid, processPath)/' "$lookup"
-cp Sources/Engine/vpn_app_darwin.go "$stage/sing-box/common/dialer/splitweb_vpn_app_darwin.go"
+cp Sources/Engine/vpn_app_darwin.go "$stage/sing-box/common/dialer/splitlane_vpn_app_darwin.go"
 cp Tests/VPNServiceBinding_test.go "$stage/sing-box/common/dialer/"
 cp Sources/Engine/udp_scope_darwin.go Tests/UDPScope_test.go "$stage/sing-box/common/dialer/"
 dialer="$stage/sing-box/common/dialer/default.go"
 grep -Fq 'control.BindToInterface(interfaceFinder, options.BindInterface, -1)' "$dialer"
-sed -i '' 's/control.BindToInterface(interfaceFinder, options.BindInterface, -1)/splitWebBindInterface(interfaceFinder, options.BindInterface)/' "$dialer"
-cp Sources/Engine/amnezia_darwin.go "$stage/sing-box/common/dialer/splitweb_amnezia_darwin.go"
+sed -i '' 's/control.BindToInterface(interfaceFinder, options.BindInterface, -1)/splitLaneBindInterface(interfaceFinder, options.BindInterface)/' "$dialer"
+cp Sources/Engine/amnezia_darwin.go "$stage/sing-box/common/dialer/splitlane_amnezia_darwin.go"
 factory="$stage/sing-box/common/dialer/dialer.go"
 grep -Fq 'func New(ctx context.Context, options option.DialerOptions, remoteIsDomain bool) (N.Dialer, error) {' "$factory"
 sed -i '' '/^func New(ctx context.Context, options option.DialerOptions, remoteIsDomain bool) (N.Dialer, error) {$/a\
-	if local := splitWebAmneziaDialer(options.BindInterface); local != nil { return local, nil }\
+	if local := splitLaneAmneziaDialer(options.BindInterface); local != nil { return local, nil }\
 ' "$factory"
 (
     cd "$stage/sing-box"
@@ -47,10 +47,10 @@ sed -i '' '/^func New(ctx context.Context, options option.DialerOptions, remoteI
     export CGO_ENABLED=1
     if [[ "$mode" == test ]]; then
         go test ./common/process ./route ./common/dialer ./dns/transport/local/systemconfig \
-            -run 'Test(DarwinUDPOwner|DarwinTCPOwner|DarwinResolveAppOwner|DarwinScopedDNS|UDPOwnerGuard|SplitWebVPN|UDPScope)' "$@"
+            -run 'Test(DarwinUDPOwner|DarwinTCPOwner|DarwinResolveAppOwner|DarwinScopedDNS|UDPOwnerGuard|SplitLaneVPN|UDPScope)' "$@"
     else
         go build -buildvcs=false -trimpath -tags 'with_gvisor,with_wireguard' \
-            -ldflags "-X github.com/sagernet/sing-box/constant.Version=${upstream_version#v}-splitweb" \
+            -ldflags "-X github.com/sagernet/sing-box/constant.Version=${upstream_version#v}-splitlane" \
             -o "$stage/sing-box-local" ./cmd/sing-box
     fi
 )

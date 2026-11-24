@@ -13,9 +13,9 @@ struct VPNProxyOverlayCheck {
             return
         }
         guard geteuid() == 0 else { throw NSError(domain: "Run the dynamic store checks as administrator", code: 1) }
-        let service = "SplitWeb-Test-" + UUID().uuidString
+        let service = "SplitLane-Test-" + UUID().uuidString
         let key = "Setup:/Network/Service/\(service)/Proxies" as CFString
-        let store = SCDynamicStoreCreate(nil, "SplitWeb test" as CFString, nil, nil)!
+        let store = SCDynamicStoreCreate(nil, "SplitLane test" as CFString, nil, nil)!
         func current() -> [String: Any]? { SCDynamicStoreCopyValue(store, key) as? [String: Any] }
         defer { _ = SCDynamicStoreRemoveValue(store, key) }
         var overlay = VPNProxyOverlay()

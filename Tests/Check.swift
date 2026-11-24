@@ -181,7 +181,7 @@ struct Check {
                 let passthrough = tunRules[appRouteIndex + 5]
                 precondition(passthrough["outbound"] as? String == "original-scope")
                 let packetOutbounds = tunJSON["outbounds"] as! [[String: Any]]
-                precondition(packetOutbounds.first { $0["tag"] as? String == "original-scope" }?["bind_interface"] as? String == "splitweb-original-scope")
+                precondition(packetOutbounds.first { $0["tag"] as? String == "original-scope" }?["bind_interface"] as? String == "splitlane-original-scope")
                 precondition(!packetOutbounds.contains { $0["tag"] as? String == "system" })
                 precondition(!tunRules.contains { $0["source_ip_cidr"] != nil })
                 precondition(tunRules.count == appRouteIndex + 6 && tunRoute["final"] as? String == "original-scope")
@@ -235,7 +235,7 @@ struct Check {
             let withIsolatedDNS = try ProxyRoutingConfiguration.make(rules: [safari, directFinder])
             let vpnJSON = try JSONSerialization.jsonObject(with: withIsolatedDNS.data) as! [String: Any]
             let vpnOutbounds = vpnJSON["outbounds"] as! [[String: Any]]
-            let vpnOutbound = vpnOutbounds.first { $0["bind_interface"] as? String == "splitweb-vpn-service:" + profileID }
+            let vpnOutbound = vpnOutbounds.first { $0["bind_interface"] as? String == "splitlane-vpn-service:" + profileID }
             let directOutbound = vpnOutbounds.first { $0["bind_interface"] as? String == directIface }
             precondition(vpnOutbound?["type"] as? String == "direct" && directOutbound?["type"] as? String == "direct")
             let vpnTag = vpnOutbound!["tag"] as! String
@@ -260,7 +260,7 @@ struct Check {
         let groupFilter = PacketRoutingConfiguration.filter(owner: 501, interface: "utun9", capturesTCP: true)
         precondition(groupFilter.contains("out quick on utun9 inet proto tcp no state"))
         precondition(groupFilter.contains("out quick on ! lo0 route-to (utun9 172.31.252.2) inet proto tcp"))
-        precondition(groupFilter.contains("in quick on utun9 route-to (lo0 ::1) inet6 proto tcp from any to <splitweb_local_addresses> no state"))
+        precondition(groupFilter.contains("in quick on utun9 route-to (lo0 ::1) inet6 proto tcp from any to <splitlane_local_addresses> no state"))
         precondition(groupFilter.contains("keep state (if-bound)"))
         precondition(groupFilter.contains("on ! lo0 route-to (utun9 172.31.252.2) inet proto udp"))
         precondition(groupFilter.contains("on ! lo0 route-to (utun9 fd9e:7345:2b1c:252::2) inet6 proto udp"))
@@ -311,7 +311,7 @@ struct Check {
             let output = Pipe()
             let compiler = Process()
             compiler.executableURL = URL(fileURLWithPath: "/sbin/pfctl")
-            compiler.arguments = ["-n", "-v", "-a", "com.apple/local.splitwebonmac.test"] + optimizer + ["-f", "-"]
+            compiler.arguments = ["-n", "-v", "-a", "com.apple/local.splitlane.test"] + optimizer + ["-f", "-"]
             compiler.standardInput = input
             compiler.standardOutput = output
             compiler.standardError = output
@@ -324,7 +324,7 @@ struct Check {
             let loadedRoutes = compiled.split(separator: "\n").filter { $0.contains("route-to") }.count
             precondition(loadedRoutes == expectedRoutes, "pfctl expanded \(expectedRoutes) route-to rules to \(loadedRoutes)")
         }
-        precondition(filter.contains("table <splitweb_local_addresses> const { self }"))
+        precondition(filter.contains("table <splitlane_local_addresses> const { self }"))
     }
 
     static func checkProxyOverlayRecovery() {
@@ -358,7 +358,7 @@ struct Check {
         precondition(DefaultNetwork.selectDominantInterface(
             from: ["en0", "utun13", "utun13", "utun13"], fallback: "en0"
         ) == "utun13")
-        // SplitWeb's own capture interfaces and loopback are excluded.
+        // SplitLane's own capture interfaces and loopback are excluded.
         precondition(DefaultNetwork.selectDominantInterface(
             from: ["utun9", "utun9", "utun9", "utun9"], fallback: "en0", excluded: ["utun9"]
         ) == "en0")
@@ -421,7 +421,7 @@ struct Check {
             dynamicServices: dynamic, tunnelOwner: nil, foreignProxy: "прокси SOCKS 127.0.0.1:10808"
         ) == "Wi-Fi (en0) · прокси SOCKS 127.0.0.1:10808")
 
-        // Foreign proxy ignores SplitWeb's own loopback proxy, detects external SOCKS/HTTP/PAC.
+        // Foreign proxy ignores SplitLane's own loopback proxy, detects external SOCKS/HTTP/PAC.
         let own = ProxyOverlaySettings.installing(on: [:], port: ProxyOverlaySettings.port)
         precondition(DefaultNetwork.foreignProxyDescription(from: own) == nil)
         precondition(DefaultNetwork.foreignProxyDescription(from: [

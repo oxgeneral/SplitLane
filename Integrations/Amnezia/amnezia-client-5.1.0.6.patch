@@ -15,7 +15,7 @@ index f5b6812..4530808 100644
    m_initializingRetry = 0;
  
 +#ifdef Q_OS_MACOS
-+  if (qEnvironmentVariableIsSet("SPLITWEB_AWG_HELPER")) {
++  if (qEnvironmentVariableIsSet("SPLITLANE_AWG_HELPER")) {
 +    m_daemonState = eReady;
 +    emit initialized(true, false, QDateTime());
 +    return;
@@ -29,17 +29,17 @@ index f5b6812..4530808 100644
    }
  
 +#ifdef Q_OS_MACOS
-+  if (qEnvironmentVariableIsSet("SPLITWEB_AWG_HELPER")) {
-+    if (m_splitWebProcess) {
++  if (qEnvironmentVariableIsSet("SPLITLANE_AWG_HELPER")) {
++    if (m_splitLaneProcess) {
 +      return;
 +    }
-+    const QString helperPath = qEnvironmentVariable("SPLITWEB_AWG_HELPER");
++    const QString helperPath = qEnvironmentVariable("SPLITLANE_AWG_HELPER");
 +    if (!QFileInfo(helperPath).isAbsolute() || !QFileInfo(helperPath).isExecutable()) {
 +      emit disconnected();
 +      return;
 +    }
 +    auto* helper = new QProcess(this);
-+    m_splitWebProcess = helper;
++    m_splitLaneProcess = helper;
 +    helper->setProgram(helperPath);
 +    helper->setStandardErrorFile(QProcess::nullDevice());
 +    const QByteArray config = QJsonDocument(json).toJson(QJsonDocument::Compact) + "\n";
@@ -55,8 +55,8 @@ index f5b6812..4530808 100644
 +      }
 +    });
 +    const auto cleanup = [this, helper] {
-+      if (m_splitWebProcess == helper) {
-+        m_splitWebProcess = nullptr;
++      if (m_splitLaneProcess == helper) {
++        m_splitLaneProcess = nullptr;
 +        helper->deleteLater();
 +        emit disconnected();
 +      }
@@ -77,9 +77,9 @@ index f5b6812..4530808 100644
  void LocalSocketController::deactivate() {
    logger.debug() << "Deactivating";
 +#ifdef Q_OS_MACOS
-+  if (qEnvironmentVariableIsSet("SPLITWEB_AWG_HELPER")) {
-+    if (m_splitWebProcess) {
-+      m_splitWebProcess->closeWriteChannel();
++  if (qEnvironmentVariableIsSet("SPLITLANE_AWG_HELPER")) {
++    if (m_splitLaneProcess) {
++      m_splitLaneProcess->closeWriteChannel();
 +    }
 +    emit disconnected();
 +    return;
@@ -93,7 +93,7 @@ index f5b6812..4530808 100644
  
  void LocalSocketController::checkStatus() {
 +#ifdef Q_OS_MACOS
-+  if (qEnvironmentVariableIsSet("SPLITWEB_AWG_HELPER")) {
++  if (qEnvironmentVariableIsSet("SPLITLANE_AWG_HELPER")) {
 +    return;
 +  }
 +#endif
@@ -117,7 +117,7 @@ index 4070c75..b0527c7 100644
  
    QLocalSocket* m_socket = nullptr;
 +#ifdef Q_OS_MACOS
-+  QProcess* m_splitWebProcess = nullptr;
++  QProcess* m_splitLaneProcess = nullptr;
 +#endif
  
    QByteArray m_buffer;
@@ -131,10 +131,10 @@ index b2f7786..ae75d49 100644
  #endif
      constexpr const char *keyChainName = CLIENT_KEYCHAIN_NAME_STR;
 +
-+    bool splitWebReadOnly()
++    bool splitLaneReadOnly()
 +    {
 +#ifdef Q_OS_MACOS
-+        return qEnvironmentVariableIsSet("SPLITWEB_AWG_HELPER");
++        return qEnvironmentVariableIsSet("SPLITLANE_AWG_HELPER");
 +#else
 +        return false;
 +#endif
@@ -144,7 +144,7 @@ index b2f7786..ae75d49 100644
  SecureQSettings::SecureQSettings(const QString &organization, const QString &application, QObject *parent, bool enableEncryption)
      : QObject { parent }, m_settings(organization, application, parent), encryptedKeys({ "Servers/serversList", "Conf/favoriteLocations", "Conf/proxyUrls/agw_state" }), m_encryptionEnabled(enableEncryption)
  {
-+    if (splitWebReadOnly()) {
++    if (splitLaneReadOnly()) {
 +        return;
 +    }
      bool encrypted = m_settings.value("Conf/encrypted").toBool();
@@ -154,7 +154,7 @@ index b2f7786..ae75d49 100644
  void SecureQSettings::setValue(const QString &key, const QVariant &value)
  {
      QMutexLocker locker(&m_mutex);
-+    if (splitWebReadOnly()) {
++    if (splitLaneReadOnly()) {
 +        m_cache.insert(key, value);
 +        return;
 +    }
@@ -165,7 +165,7 @@ index b2f7786..ae75d49 100644
  {
      QMutexLocker locker(&m_mutex);
  
-+    if (splitWebReadOnly()) {
++    if (splitLaneReadOnly()) {
 +        m_cache.insert(key, QVariant());
 +        return;
 +    }
@@ -176,7 +176,7 @@ index b2f7786..ae75d49 100644
  
  bool SecureQSettings::restoreAppConfig(const QByteArray &json)
  {
-+    if (splitWebReadOnly()) {
++    if (splitLaneReadOnly()) {
 +        return false;
 +    }
      QMutexLocker locker(&m_mutex);
@@ -186,7 +186,7 @@ index b2f7786..ae75d49 100644
  
  void SecureQSettings::clearSettings()
  {
-+    if (splitWebReadOnly()) {
++    if (splitLaneReadOnly()) {
 +        return;
 +    }
      QMutexLocker locker(&m_mutex);
@@ -196,7 +196,7 @@ index b2f7786..ae75d49 100644
      }
      // load keys from system key storage
      m_key = getSecTag(settingsKeyTag);
-+    if (splitWebReadOnly()) {
++    if (splitLaneReadOnly()) {
 +        return m_key;
 +    }
  
@@ -206,7 +206,7 @@ index b2f7786..ae75d49 100644
      }
      // load keys from system key storage
      m_iv = getSecTag(settingsIvTag);
-+    if (splitWebReadOnly()) {
++    if (splitLaneReadOnly()) {
 +        return m_iv;
 +    }
  
@@ -221,7 +221,7 @@ index 89c0663..c999169 100644
  void VpnConnection::onKillSwitchModeChanged(bool enabled)
  {
 +#ifdef Q_OS_MACOS
-+    if (qEnvironmentVariableIsSet("SPLITWEB_AWG_HELPER")) {
++    if (qEnvironmentVariableIsSet("SPLITLANE_AWG_HELPER")) {
 +        return;
 +    }
 +#endif
@@ -233,7 +233,7 @@ index 89c0663..c999169 100644
  void VpnConnection::onConnectionStateChanged(Vpn::ConnectionState state)
  {
 +#ifdef Q_OS_MACOS
-+    if (qEnvironmentVariableIsSet("SPLITWEB_AWG_HELPER")) {
++    if (qEnvironmentVariableIsSet("SPLITLANE_AWG_HELPER")) {
 +        return;
 +    }
 +#endif
@@ -245,7 +245,7 @@ index 89c0663..c999169 100644
  void VpnConnection::connectToVpn(const QString &serverId, DockerContainer container, const QJsonObject &vpnConfiguration)
  {
 +#ifdef Q_OS_MACOS
-+    if (qEnvironmentVariableIsSet("SPLITWEB_AWG_HELPER") && !ContainerUtils::isAwgContainer(container)) {
++    if (qEnvironmentVariableIsSet("SPLITLANE_AWG_HELPER") && !ContainerUtils::isAwgContainer(container)) {
 +        setConnectionState(Vpn::ConnectionState::Error);
 +        emit vpnProtocolError(ErrorCode::NotSupportedOnThisPlatform);
 +        return;
@@ -269,9 +269,9 @@ diff --git a/client/main.cpp b/client/main.cpp
  {
 +
 +#ifdef Q_OS_MACOS
-+    const QString helper = QFileInfo(QFile::decodeName(argv[0])).absolutePath() + "/splitweb-awg";
++    const QString helper = QFileInfo(QFile::decodeName(argv[0])).absolutePath() + "/splitlane-awg";
 +    if (QFileInfo(helper).isExecutable()) {
-+        qputenv("SPLITWEB_AWG_HELPER", QFile::encodeName(helper));
++        qputenv("SPLITLANE_AWG_HELPER", QFile::encodeName(helper));
 +    }
 +#endif
      Migrations migrationsManager;
@@ -286,7 +286,7 @@ diff --git a/client/core/controllers/gatewayController.cpp b/client/core/control
  
 +#ifdef Q_OS_MACOS
 +    // Public production gateway configuration from the official macOS 5.1.0.6 release.
-+    constexpr char splitWebGatewayKey[] = R"pem(-----BEGIN PUBLIC KEY-----
++    constexpr char splitLaneGatewayKey[] = R"pem(-----BEGIN PUBLIC KEY-----
 +MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAj5mxl/4DL3Sk89ntxs5G
 +X3JawGQWIoq6rvNkOzNGuNgedNS2+pi6hZl3Izl1Io9om4KiUlMT6mgLO1hTr9q+
 +s7CYhlvroFA7ErucF+9L+7FCt0Igi0kIK/R2/vxd/2HaUrorn/aSvvutkYwbfxqW
@@ -301,12 +301,12 @@ diff --git a/client/core/controllers/gatewayController.cpp b/client/core/control
 +3j8zMVo3+zLrMTAaEeIUM0UCAwEAAQ==
 +-----END PUBLIC KEY-----
 +)pem";
-+    constexpr char splitWebPrimaryStorage[] =
++    constexpr char splitLanePrimaryStorage[] =
 +        "https://s3.eu-north-1.amazonaws.com/amnezia/, "
 +        "https://storage.googleapis.com/lambda-list/, "
 +        "https://amnzstrg01.blob.core.windows.net/lambda-list/, "
 +        "https://objectstorage.eu-zurich-1.oraclecloud.com/n/zrhfyaq6qxvh/b/lambda-list/o/";
-+    constexpr char splitWebFallbackStorage[] =
++    constexpr char splitLaneFallbackStorage[] =
 +        "https://storage.mwsapis.ru/lambda-list/, "
 +        "https://46.8.209.252/lambda-list/, "
 +        "https://s3.cloudruserapi.net/lambda-list/";
@@ -332,13 +332,13 @@ diff --git a/client/core/controllers/gatewayController.cpp b/client/core/control
      }
 +
 +#ifdef Q_OS_MACOS
-+    if (!isDevEnvironment && publicKey.isEmpty() && qEnvironmentVariableIsSet("SPLITWEB_AWG_HELPER")) {
-+        publicKey = splitWebGatewayKey;
++    if (!isDevEnvironment && publicKey.isEmpty() && qEnvironmentVariableIsSet("SPLITLANE_AWG_HELPER")) {
++        publicKey = splitLaneGatewayKey;
 +        if (primaryEndpoints.isEmpty()) {
-+            primaryEndpoints = splitEndpoints(splitWebPrimaryStorage);
++            primaryEndpoints = splitEndpoints(splitLanePrimaryStorage);
 +        }
 +        if (fallbackEndpoints.isEmpty()) {
-+            fallbackEndpoints = splitEndpoints(splitWebFallbackStorage);
++            fallbackEndpoints = splitEndpoints(splitLaneFallbackStorage);
 +        }
 +    }
 +#endif
@@ -351,7 +351,7 @@ diff --git a/client/core/controllers/gatewayController.cpp b/client/core/control
  
  #ifdef AMNEZIA_DESKTOP
 +    #ifdef Q_OS_MACOS
-+    if (qEnvironmentVariableIsSet("SPLITWEB_AWG_HELPER")) {
++    if (qEnvironmentVariableIsSet("SPLITLANE_AWG_HELPER")) {
 +        return;
 +    }
 +    #endif

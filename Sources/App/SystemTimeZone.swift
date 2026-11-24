@@ -9,7 +9,7 @@ struct SystemTimeZoneEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Часовой пояс при включённых правилах").font(.headline)
-            Text("SplitWeb применит пояс ко всему Mac при включении правил и вернёт прежний при выключении.")
+            Text("SplitLane применит пояс ко всему Mac при включении правил и вернёт прежний при выключении.")
                 .foregroundStyle(.secondary)
             Button {
                 picking.toggle()

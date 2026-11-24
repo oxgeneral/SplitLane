@@ -1,4 +1,4 @@
-module splitwebonmac.local/amnezia
+module splitlane.local/amnezia
 
 go 1.25.0
 

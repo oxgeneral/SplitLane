@@ -55,7 +55,7 @@ enum PacketRoutingConfiguration {
 
     static func make(apps: [PacketRoutingRule]) throws -> Data {
         var outbounds: [[String: Any]] = [
-            ["type": "direct", "tag": "original-scope", "bind_interface": "splitweb-original-scope"]
+            ["type": "direct", "tag": "original-scope", "bind_interface": "splitlane-original-scope"]
         ]
         var rules: [[String: Any]] = []
         for app in apps.sorted(by: { $0.path.count > $1.path.count }) {
@@ -96,28 +96,28 @@ enum PacketRoutingConfiguration {
 
     static func filter(owner: UInt32, interface: String, capturesTCP: Bool) -> String {
         var rules = """
-            table <splitweb_webrtc_exempt4> const { 127.0.0.0/8, 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255/32 }
-            table <splitweb_webrtc_exempt6> const { ::1/128, fe80::/10, ff00::/8 }
-            table <splitweb_local_addresses> const { self }
+            table <splitlane_webrtc_exempt4> const { 127.0.0.0/8, 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255/32 }
+            table <splitlane_webrtc_exempt6> const { ::1/128, fe80::/10, ff00::/8 }
+            table <splitlane_local_addresses> const { self }
 
             """
         for (family, peer, loopback, exempt) in [
-            ("inet", "172.31.252.2", "127.0.0.1", "splitweb_webrtc_exempt4"),
-            ("inet6", "fd9e:7345:2b1c:252::2", "::1", "splitweb_webrtc_exempt6")
+            ("inet", "172.31.252.2", "127.0.0.1", "splitlane_webrtc_exempt4"),
+            ("inet6", "fd9e:7345:2b1c:252::2", "::1", "splitlane_webrtc_exempt6")
         ] {
             let redirect = "route-to (\(interface) \(peer)) \(family)"
             if capturesTCP {
                 // PF re-evaluates route-to packets on the capture TUN interface.
                 rules += "pass out quick on \(interface) \(family) proto tcp no state\n"
                 // Loopback delivery satisfies macOS's receive-interface check across VPN and physical interfaces.
-                rules += "pass in quick on \(interface) route-to (lo0 \(loopback)) \(family) proto tcp from any to <splitweb_local_addresses> no state\n"
+                rules += "pass in quick on \(interface) route-to (lo0 \(loopback)) \(family) proto tcp from any to <splitlane_local_addresses> no state\n"
                 // Capture new TCP connections across all non-loopback interfaces (including half-route VPNs and scoped sockets).
                 rules += "pass out quick on ! lo0 \(redirect) proto tcp from any to ! <\(exempt)> user = \(owner) flags S/SA keep state (if-bound)\n"
             }
             // PF evaluates route-to packets again on the TUN interface.
-            rules += "pass out quick on \(interface) \(family) proto udp tagged splitweb_udp no state\n"
-            rules += "pass in quick on \(interface) route-to (lo0 \(loopback)) \(family) proto udp from any to <splitweb_local_addresses> no state\n"
-            rules += "pass out quick on ! lo0 \(redirect) proto udp from any to ! <\(exempt)> user = \(owner) tag splitweb_udp no state\n"
+            rules += "pass out quick on \(interface) \(family) proto udp tagged splitlane_udp no state\n"
+            rules += "pass in quick on \(interface) route-to (lo0 \(loopback)) \(family) proto udp from any to <splitlane_local_addresses> no state\n"
+            rules += "pass out quick on ! lo0 \(redirect) proto udp from any to ! <\(exempt)> user = \(owner) tag splitlane_udp no state\n"
         }
         return rules
     }
