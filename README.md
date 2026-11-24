@@ -6,6 +6,14 @@
 
 [Скачать последний релиз](https://github.com/oxgeneral/SplitLane/releases/latest) · [Инструкция по установке](INSTALL.txt) · [Changelog](CHANGELOG.md)
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/preview-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/preview-light.png">
+    <img alt="Интерфейс SplitLane в строке меню macOS" src="docs/preview-light.png" width="740">
+  </picture>
+</p>
+
 ---
 
 ## Возможности
