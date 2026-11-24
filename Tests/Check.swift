@@ -266,7 +266,16 @@ struct Check {
         precondition(groupFilter.contains("on ! lo0 route-to (utun9 fd9e:7345:2b1c:252::2) inet6 proto udp"))
         precondition(groupFilter.split(separator: "\n").filter { $0.contains("proto udp") } ==
                      blockFilter.split(separator: "\n").filter { $0.contains("proto udp") })
-        for filter in [blockFilter, groupFilter] {
+        let udpFallback = PacketRoutingConfiguration.filter(owner: 501, interface: nil, capturesTCP: false)
+        let groupFallback = PacketRoutingConfiguration.filter(owner: 501, interface: nil, capturesTCP: true)
+        precondition(!udpFallback.contains("proto tcp"))
+        for (fallback, expectedCount) in [(udpFallback, 2), (groupFallback, 4)] {
+            let blocks = fallback.split(separator: "\n").filter { $0.hasPrefix("block drop out quick on ! lo0") }
+            precondition(blocks.count == expectedCount && blocks.allSatisfy { $0.hasSuffix("user = 501") })
+            precondition(blocks.contains { $0.contains("inet proto udp") } && blocks.contains { $0.contains("inet6 proto udp") })
+            precondition(!fallback.contains("pass ") && !fallback.contains("route-to "))
+        }
+        for filter in [blockFilter, groupFilter, udpFallback, groupFallback] {
             try checkPacketFilterExpansion(filter)
         }
         checkDefaultNetworkDetection()

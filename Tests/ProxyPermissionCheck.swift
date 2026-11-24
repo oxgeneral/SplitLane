@@ -52,6 +52,7 @@ enum ProxyPermissionCheck {
             precondition(input.range(of: pattern, options: .regularExpression) == input.startIndex..<input.endIndex)
         }
         let forbiddenArguments = malformed + [
+            ["--recover"], ["--authorized", "--recover"],
             authorized + ["protect", "502"] + timeZone,
             Array(authorized.prefix(3)) + ["80"] + Array(authorized.suffix(2)) + timeZone,
             base + timeZone,

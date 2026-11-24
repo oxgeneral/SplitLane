@@ -2,6 +2,16 @@ import Foundation
 
 enum ProxyOverlaySettings {
     static let port: UInt16 = 39878
+    static let lock = "/var/run/local.splitlane.lock"
+    static let proxyJournal = URL(fileURLWithPath: "/var/db/local.splitlane.proxy-restore.plist")
+    static let packetJournal = URL(fileURLWithPath: "/var/db/local.splitlane.pf-token")
+
+    static var recoveryPending: Bool {
+        [proxyJournal.path, packetJournal.path, SystemTimeZoneCommand.journal].contains {
+            FileManager.default.fileExists(atPath: $0)
+        }
+    }
+
     private static let schemes = ["HTTP", "HTTPS"]
     private static let otherFlags = ["SOCKSEnable", "ProxyAutoConfigEnable", "ProxyAutoDiscoveryEnable",
                                      "FTPEnable", "GopherEnable", "RTSPEnable"]

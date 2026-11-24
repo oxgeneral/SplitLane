@@ -4,7 +4,7 @@ import SystemConfiguration
 
 @main
 struct ProxyOverlay {
-    private static let journal = URL(fileURLWithPath: "/var/db/local.splitlane.proxy-restore.plist")
+    private static let journal = ProxyOverlaySettings.proxyJournal
     private static let log = Logger(subsystem: "local.splitlane", category: "proxy")
 
     static func main() {
@@ -17,23 +17,40 @@ struct ProxyOverlay {
     }
 
     private static func run() throws {
-        let request = try ProxyOverlayRequest(arguments: Array(CommandLine.arguments.dropFirst()))
+        guard geteuid() == 0 else { throw failure("Для изменения сетевых настроек нужен администратор Mac.") }
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        if arguments == ["--recover"] {
+            let lock = try acquireLock()
+            defer { close(lock) }
+            var firstError: Error?
+            for step in [
+                { try PacketCapture.recover() },
+                { try restore() },
+                { try cleanLegacyVPNProxies() },
+                { try restoreTimeZone() }
+            ] {
+                do { try step() }
+                catch {
+                    log.error("Recovery step failed: \(error.localizedDescription, privacy: .private)")
+                    if firstError == nil { firstError = error }
+                }
+            }
+            if let firstError { throw firstError }
+            return
+        }
+        let request = try ProxyOverlayRequest(arguments: arguments)
         var owner: uid_t?
         var lock: Int32 = -1
         defer { if lock >= 0 { close(lock) } }
         if request.authorized {
-            guard geteuid() == 0,
-                  let uid = ProcessInfo.processInfo.environment["SUDO_UID"].flatMap(uid_t.init), uid > 0 else {
+            guard let uid = ProcessInfo.processInfo.environment["SUDO_UID"].flatMap(uid_t.init), uid > 0 else {
                 throw failure("Нет разрешения на управление системным прокси.")
             }
             owner = uid
-            lock = open("/var/run/local.splitlane.lock", O_RDONLY | O_CREAT | O_NOFOLLOW, 0o600)
-            guard lock >= 0, flock(lock, LOCK_EX | LOCK_NB) == 0 else {
-                throw failure("Другая копия SplitLane уже управляет маршрутами.")
-            }
+            lock = try acquireLock()
         }
         if let uid = request.packetCaptureOwner {
-            guard geteuid() == 0, !request.authorized || uid == owner else {
+            guard !request.authorized || uid == owner else {
                 throw failure("Нет разрешения на управление сетевым фильтром SplitLane.")
             }
             owner = uid
@@ -45,27 +62,29 @@ struct ProxyOverlay {
         guard let store = SCDynamicStoreCreate(nil, "SplitLane" as CFString, nil, nil) else {
             throw failure("Не удалось открыть сетевые настройки macOS.")
         }
-        func restoreTimeZone() throws {
-            if FileManager.default.fileExists(atPath: SystemTimeZoneCommand.journal) {
-                try SystemTimeZoneCommand.run(["restore"])
-            }
+        guard !ProxyOverlaySettings.recoveryPending else {
+            throw failure("Остались сетевые настройки предыдущего сеанса. Нажми «Восстановить сеть».")
         }
-        try restoreTimeZone()
-        try restore()
         try cleanLegacyVPNProxies()
-        try PacketCapture.recover()
         guard !primaryServices(store).isEmpty else {
             throw failure("Подключись к Wi‑Fi или Ethernet и снова нажми «Включить правила».")
         }
 
+        var requestedStop = false
         func active() throws -> Bool {
             var status = stat()
             guard kill(request.appPID, 0) == 0 else {
-                log.notice("Restoring network settings because the application exited.")
+                throw failure("SplitLane завершилась во время работы сетевых правил.")
+            }
+            let leaseStatus = lstat(lease.path, &status)
+            if leaseStatus != 0 && errno == ENOENT {
+                requestedStop = true
                 return false
             }
-            guard lstat(lease.path, &status) == 0, status.st_mode & S_IFMT == S_IFREG,
-                  owner == nil || status.st_uid == owner else { return false }
+            guard leaseStatus == 0, status.st_mode & S_IFMT == S_IFREG,
+                  owner == nil || status.st_uid == owner else {
+                throw failure("Файл активной сессии SplitLane недоступен.")
+            }
             guard kill(request.proxyPID, 0) == 0 else {
                 log.error("The local proxy exited while routing was active.")
                 throw failure("Локальный прокси остановился.")
@@ -84,13 +103,25 @@ struct ProxyOverlay {
         var vpnOverlay = VPNProxyOverlay()
         var protection: PacketCapture?
         var timeZoneStarted = false
+        var wasReady = false
         defer {
+            let keepFilter = protection != nil && wasReady && !requestedStop
+            var restoreProxy = !keepFilter || (protection?.capturesTCP == true)
+            if keepFilter, let protection {
+                do { try protection.hold() }
+                catch {
+                    restoreProxy = false
+                    log.error("Could not activate emergency packet blocking. The recovery journal was retained.")
+                }
+            }
             try? FileManager.default.removeItem(at: ready)
             do { try vpnOverlay.stop() }
             catch { log.error("Could not restore the temporary VPN settings.") }
-            do { try restore() }
-            catch { log.error("Could not restore the system proxy. The recovery journal was retained.") }
-            protection?.stop()
+            if restoreProxy {
+                do { try restore() }
+                catch { log.error("Could not restore the system proxy. The recovery journal was retained.") }
+            }
+            protection?.stop(keepingFilter: keepFilter)
             try? FileManager.default.removeItem(at: state)
             if timeZoneStarted {
                 do { try restoreTimeZone() }
@@ -136,6 +167,8 @@ struct ProxyOverlay {
                         timeZoneStarted = true
                         try SystemTimeZoneCommand.run(["begin", timeZone])
                     }
+                    if !wasReady { try protection?.armFallback() }
+                    wasReady = true
                     try Data().write(to: ready)
                 }
             } else if !activeServices.isEmpty, !effective(port) {
@@ -145,7 +178,7 @@ struct ProxyOverlay {
                     let current = SCDynamicStoreCopyProxies(nil) as? [String: Any] ?? [:]
                     if ProxyOverlaySettings.hasProxy(current) {
                         log.error("The active system proxy no longer points to SplitLane.")
-                        throw failure("Системный прокси был изменён извне. Правила выключены.")
+                        throw failure("Системный прокси был изменён извне.")
                     }
                     log.notice("Re-applying SplitLane proxy after network service reset.")
                     activeServices = []
@@ -155,6 +188,22 @@ struct ProxyOverlay {
         }
         try vpnOverlay.stop()
         try restore()
+    }
+
+    private static func restoreTimeZone() throws {
+        if FileManager.default.fileExists(atPath: SystemTimeZoneCommand.journal) {
+            try SystemTimeZoneCommand.run(["restore"])
+        }
+    }
+
+    private static func acquireLock() throws -> Int32 {
+        let lock = open(ProxyOverlaySettings.lock, O_RDONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard lock >= 0 else { throw failure("Не удалось открыть блокировку сетевых настроек SplitLane.") }
+        guard flock(lock, LOCK_EX | LOCK_NB) == 0 else {
+            close(lock)
+            throw failure("Другая копия SplitLane уже управляет маршрутами.")
+        }
+        return lock
     }
 
     private static func isVPNService(_ id: String, store: SCDynamicStore) -> Bool? {

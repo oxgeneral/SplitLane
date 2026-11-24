@@ -113,11 +113,8 @@ final class TunSession {
     }
 
     func renewLease() throws {
-        guard !wantsStop else { return }
-        if let proxy {
-            guard proxy.isRunning else { throw TunConfiguration.failure("Локальный прокси остановился.") }
-            return
-        }
+        // The privileged overlay distinguishes a proxy crash from explicit lease removal.
+        guard !wantsStop, proxy == nil else { return }
         try Data().write(to: lease, options: .atomic)
     }
 
@@ -136,19 +133,38 @@ final class TunSession {
         try? FileManager.default.removeItem(at: directory)
         let cancelled = AdministratorCommand.wasCancelled(error)
         let anotherSessionOwnsLock = error.contains("lockf:")
+        let rootCause = (!cancelled && !anotherSessionOwnsLock && !error.isEmpty) ? error : nil
         if managesTimeZone, FileManager.default.fileExists(atPath: SystemTimeZoneCommand.journal),
            !cancelled, !anotherSessionOwnsLock {
-            return "macOS пока не восстановила часовой пояс. SplitLane повторит восстановление при следующем включении правил."
+            if let rootCause, rootCause.contains("Восстановить сеть") { return rootCause }
+            let recovery = proxy != nil
+                ? "Нажми «Восстановить сеть»."
+                : "SplitLane повторит восстановление при следующем включении правил."
+            let note = "macOS пока не восстановила часовой пояс. \(recovery)"
+            return rootCause.map { "\($0) \(note)" } ?? note
         }
-        if proxy != nil, FileManager.default.fileExists(atPath: "/var/db/local.splitlane.proxy-restore.plist"),
+        if proxy != nil, FileManager.default.fileExists(atPath: ProxyOverlaySettings.proxyJournal.path),
            !cancelled, !anotherSessionOwnsLock {
-            return "macOS пока не восстановила прежние настройки прокси. Резервная копия сохранена."
+            if let rootCause, rootCause.contains("Восстановить сеть") { return rootCause }
+            let note = "macOS пока не восстановила прежние настройки прокси. Нажми «Восстановить сеть»."
+            return rootCause.map { "\($0) \(note)" } ?? note
         }
         guard !wantsStop, process.terminationStatus != 0 else { return nil }
         if cancelled { return "Запуск отменён. Нажми «Включить правила», чтобы попробовать снова." }
         if anotherSessionOwnsLock { return "Другая копия SplitLane уже управляет маршрутами. Выключи правила в ней и попробуй снова." }
         if let explanation = AdministratorCommand.denialExplanation(error) { return explanation }
         return error.isEmpty ? "Не удалось включить сетевой движок." : error
+    }
+
+    nonisolated static func recoverNetwork() throws {
+        let bundle = Bundle.main
+        guard let helper = bundle.url(forAuxiliaryExecutable: "proxy-overlay"),
+              let digest = bundle.object(forInfoDictionaryKey: "SplitLaneProxyOverlaySHA") as? String else {
+            throw TunConfiguration.failure("В сборке отсутствует помощник для восстановления сети.")
+        }
+        try AdministratorCommand.run(["/bin/bash", "-c", worker("run-proxy"), "splitlane",
+                                      helper.path, digest, "--recover"],
+                                     cancelled: "Восстановление сети отменено.")
     }
 
     fileprivate nonisolated static func worker(_ name: String) throws -> String {
@@ -161,7 +177,7 @@ final class TunSession {
 }
 
 enum AdministratorCommand {
-    static let lock = ["/usr/bin/lockf", "-k", "-t", "0", "/var/run/local.splitlane.lock"]
+    static let lock = ["/usr/bin/lockf", "-k", "-t", "0", ProxyOverlaySettings.lock]
 
     static func wasCancelled(_ message: String) -> Bool {
         message.contains("(-128)") || message.contains("(-60006)")
@@ -187,6 +203,22 @@ enum AdministratorCommand {
             "umask 077; exec " + command
         ]
     }
+
+    static func run(_ args: [String], cancelled: String) throws {
+        let process = Process()
+        let output = Pipe()
+        prepare(process, args)
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = output
+        try process.run()
+        let message = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            if wasCancelled(message) { throw TunConfiguration.failure(cancelled) }
+            throw TunConfiguration.failure(denialExplanation(message) ?? message)
+        }
+    }
 }
 
 enum ProxyPermission {
@@ -208,8 +240,6 @@ enum ProxyPermission {
     }
 
     static func setInstalled(_ installed: Bool) throws {
-        let process = Process()
-        let output = Pipe()
         let worker = try TunSession.worker("proxy-permission")
         var args = AdministratorCommand.lock + ["/bin/bash", "-c", worker, "splitlane",
                                                 installed ? "install" : "remove", String(getuid())]
@@ -222,18 +252,6 @@ enum ProxyPermission {
             }
             args += [source.path, digest, String(ProxyRoutingConfiguration.port), engine.path, engineDigest]
         }
-        AdministratorCommand.prepare(process, args)
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = output
-        try process.run()
-        let message = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            if AdministratorCommand.wasCancelled(message) {
-                throw TunConfiguration.failure("Настройка разрешения отменена.")
-            }
-            throw TunConfiguration.failure(AdministratorCommand.denialExplanation(message) ?? message)
-        }
+        try AdministratorCommand.run(args, cancelled: "Настройка разрешения отменена.")
     }
 }

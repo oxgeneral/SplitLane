@@ -2,17 +2,21 @@ import Foundation
 
 final class PacketCapture {
     private static let anchor = "com.apple/local.splitlane.webrtc"
-    private static let journal = URL(fileURLWithPath: "/var/db/local.splitlane.pf-token")
+    private static let journal = ProxyOverlaySettings.packetJournal
 
     private let engine = Process()
+    private let engineLifetime = Pipe()
     private let directory: URL
     private let owner: uid_t
     private var token: String?
     private var nextCheck = ContinuousClock.now
-    private let capturesTCP: Bool
+    let capturesTCP: Bool
     private var tunnel = ""
     private var installedRules = ""
     private var installedAddresses: [String] = []
+    private var fallbackRules: URL { directory.appendingPathComponent("blocked.conf") }
+    private var armed: URL { directory.appendingPathComponent("armed") }
+    private var enginePIDFile: URL { directory.appendingPathComponent("engine.pid") }
 
     init(lease: URL, state: URL, owner: uid_t, executable: URL) throws {
         directory = state.appendingPathComponent("protection")
@@ -27,14 +31,17 @@ final class PacketCapture {
                   !interfaces.contains(PacketRoutingConfiguration.ipv6) else {
                 throw Self.failure("Адрес интерфейса перехвата уже используется.")
             }
-            let mainRules = try Self.command("/sbin/pfctl", ["-sr"])
-            guard mainRules.split(separator: "\n").contains("anchor \"com.apple/*\" all") else {
-                throw Self.failure("macOS не предоставила точку подключения сетевого фильтра SplitLane.")
-            }
+            try Self.checkAnchor()
             let config = directory.appendingPathComponent("tun.json")
             try PacketRoutingConfiguration.make(apps: apps).write(to: config)
-            engine.executableURL = executable
-            engine.arguments = ["run", "-c", config.path]
+            let fallback = PacketRoutingConfiguration.filter(owner: owner, interface: nil, capturesTCP: capturesTCP)
+            try fallback.write(to: fallbackRules, atomically: true, encoding: .utf8)
+            _ = try Self.command("/sbin/pfctl", ["-n", "-a", Self.anchor, "-f", fallbackRules.path])
+            engine.executableURL = URL(fileURLWithPath: "/bin/bash")
+            engine.arguments = ["-c", Self.watchEngine, "splitlane-capture", executable.path, config.path,
+                                armed.path, Self.journal.path, Self.anchor, fallbackRules.path,
+                                ProxyOverlaySettings.lock, enginePIDFile.path]
+            engine.standardInput = engineLifetime
             engine.standardOutput = FileHandle.nullDevice
             engine.standardError = FileHandle.nullDevice
             try engine.run()
@@ -66,31 +73,54 @@ final class PacketCapture {
         }
     }
 
+    func armFallback() throws {
+        if let token {
+            try Data(token.utf8).write(to: armed, options: .atomic)
+        }
+    }
+
+    func hold() throws {
+        try Self.checkAnchor()
+        _ = try Self.command("/sbin/pfctl", ["-a", Self.anchor, "-f", fallbackRules.path])
+        let status = try Self.command("/sbin/pfctl", ["-si"])
+        guard status.split(separator: "\n").contains(where: { $0.hasPrefix("Status: Enabled") }) else {
+            throw Self.failure("Сетевой фильтр macOS выключен. Аварийная блокировка недоступна.")
+        }
+    }
+
     static func recover() throws {
         guard FileManager.default.fileExists(atPath: journal.path) else { return }
-        let token = try String(contentsOf: journal, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard UInt64(token) != nil else { throw failure("Не удалось восстановить состояние сетевого фильтра SplitLane.") }
         _ = try command("/sbin/pfctl", ["-a", anchor, "-F", "rules"])
-        _ = try? command("/sbin/pfctl", ["-X", token])
+        let token = (try? String(contentsOf: journal, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let token, UInt64(token) != nil {
+            _ = try? command("/sbin/pfctl", ["-X", token])
+        }
         try FileManager.default.removeItem(at: journal)
+        guard let token, UInt64(token) != nil else {
+            throw failure("Правила сетевого фильтра SplitLane очищены, но файл токена был повреждён.")
+        }
     }
 
     func check() throws {
-        guard engine.isRunning else { throw Self.failure("Сетевой фильтр SplitLane остановился. Правила выключены.") }
+        guard engine.isRunning else { throw Self.failure("Сетевой движок перехвата SplitLane остановился.") }
         try updateFilter()
         guard ContinuousClock.now >= nextCheck else { return }
+        try Self.checkAnchor()
         let rules = try Self.command("/sbin/pfctl", ["-a", Self.anchor, "-sr"])
         let status = try Self.command("/sbin/pfctl", ["-si"])
         let expectedCount = installedRules.split(separator: "\n").filter { $0.contains("route-to") }.count
         guard rules.split(separator: "\n").filter({ $0.contains("route-to") }).count == expectedCount,
               status.split(separator: "\n").contains(where: { $0.hasPrefix("Status: Enabled") }) else {
-            throw Self.failure("Системные правила перехвата трафика исчезли. Правила выключены.")
+            throw Self.failure("Системные правила перехвата трафика исчезли.")
         }
         nextCheck = .now + .seconds(2)
     }
 
     private func updateFilter() throws {
         let addresses = PacketRoutingConfiguration.liveAddressSnapshot()
+        guard addresses.contains("\(tunnel) inet \(PacketRoutingConfiguration.ipv4)") else {
+            throw Self.failure("Виртуальный сетевой интерфейс SplitLane исчез.")
+        }
         let rules = PacketRoutingConfiguration.filter(owner: owner, interface: tunnel, capturesTCP: capturesTCP)
         // The const self table must be reloaded when DHCP or a VPN changes local addresses.
         guard rules != installedRules || addresses != installedAddresses else { return }
@@ -102,8 +132,15 @@ final class PacketCapture {
         installedAddresses = addresses
     }
 
-    func stop() {
-        if let token {
+    private static func checkAnchor() throws {
+        let mainRules = try command("/sbin/pfctl", ["-sr"])
+        guard mainRules.split(separator: "\n").contains("anchor \"com.apple/*\" all") else {
+            throw failure("macOS не предоставила точку подключения сетевого фильтра SplitLane.")
+        }
+    }
+
+    func stop(keepingFilter: Bool = false) {
+        if let token, !keepingFilter {
             if (try? Self.command("/sbin/pfctl", ["-a", Self.anchor, "-F", "rules"])) != nil {
                 _ = try? Self.command("/sbin/pfctl", ["-X", token])
                 try? FileManager.default.removeItem(at: Self.journal)
@@ -117,12 +154,58 @@ final class PacketCapture {
                 Thread.sleep(forTimeInterval: 0.05)
             }
             if engine.isRunning {
+                if let text = try? String(contentsOf: enginePIDFile, encoding: .utf8),
+                   let childPID = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)), childPID > 1 {
+                    kill(childPID, SIGKILL)
+                }
                 kill(engine.processIdentifier, SIGKILL)
             }
             engine.waitUntilExit()
         }
         try? FileManager.default.removeItem(at: directory)
     }
+
+    // When the helper is killed, arm PF before the child releases its tunnel.
+    // The same lock and token prevent an old worker from overwriting a recovered session.
+    private static let watchEngine = #"""
+        "$1" run -c "$2" </dev/null &
+        child=$!
+        printf '%s\n' "$child" > "$8"
+        watcher=
+        cleanup() {
+            trap '' HUP INT TERM
+            if [[ -n "$watcher" ]]; then
+                kill -TERM "$watcher" 2>/dev/null || true
+                wait "$watcher" 2>/dev/null || true
+            fi
+            if [[ -n "$child" ]]; then
+                kill -TERM "$child" 2>/dev/null || true
+                for attempt in 1 2 3 4 5 6 7 8 9 10; do
+                    kill -0 "$child" 2>/dev/null || break
+                    /bin/sleep 0.1
+                done
+                kill -KILL "$child" 2>/dev/null || true
+                wait "$child" 2>/dev/null || true
+            fi
+        }
+        trap cleanup EXIT
+        trap 'exit 1' HUP INT TERM
+        wrapper=$$
+        (
+            if ! IFS= read -r _ && [[ -f "$3" ]]; then
+                /usr/bin/lockf -k -t 10 "$7" /bin/bash -c '
+                    if /usr/bin/cmp -s "$1" "$2"; then
+                        /sbin/pfctl -a "$3" -f "$4"
+                    fi' splitlane-guard "$3" "$4" "$5" "$6"
+            fi
+            kill -TERM "$wrapper" 2>/dev/null || true
+        ) <&0 &
+        watcher=$!
+        result=0
+        wait "$child" || result=$?
+        child=
+        exit "$result"
+        """#
 
     private static func readRules(beside lease: URL, owner: uid_t) throws -> [PacketRoutingRule] {
         let manifest = lease.deletingLastPathComponent().appendingPathComponent(PacketRoutingConfiguration.manifest)

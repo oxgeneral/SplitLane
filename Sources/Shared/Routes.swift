@@ -63,7 +63,7 @@ struct AppRule: Identifiable, Codable, Equatable, Sendable {
 
     // Older signed configurations blocked UDP for every assigned app.
     var blocksUDPInExtension: Bool { blockUDP != false }
-    // Proxy mode enables full isolation (TUN + WebRTC/UDP blocking) unless explicitly opted out.
+    // Proxy mode defaults to TUN capture and UDP blocking.
     var blocksUDPInProxyMode: Bool { blockUDP != false }
     var usesTUNInProxyMode: Bool { useTUN != false }
 

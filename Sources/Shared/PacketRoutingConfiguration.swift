@@ -94,7 +94,7 @@ enum PacketRoutingConfiguration {
         ], options: [.sortedKeys])
     }
 
-    static func filter(owner: UInt32, interface: String, capturesTCP: Bool) -> String {
+    static func filter(owner: UInt32, interface: String?, capturesTCP: Bool) -> String {
         var rules = """
             table <splitlane_webrtc_exempt4> const { 127.0.0.0/8, 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255/32 }
             table <splitlane_webrtc_exempt6> const { ::1/128, fe80::/10, ff00::/8 }
@@ -105,6 +105,13 @@ enum PacketRoutingConfiguration {
             ("inet", "172.31.252.2", "127.0.0.1", "splitlane_webrtc_exempt4"),
             ("inet6", "fd9e:7345:2b1c:252::2", "::1", "splitlane_webrtc_exempt6")
         ] {
+            guard let interface else {
+                if capturesTCP {
+                    rules += "block drop out quick on ! lo0 \(family) proto tcp from any to ! <\(exempt)> user = \(owner)\n"
+                }
+                rules += "block drop out quick on ! lo0 \(family) proto udp from any to ! <\(exempt)> user = \(owner)\n"
+                continue
+            }
             let redirect = "route-to (\(interface) \(peer)) \(family)"
             if capturesTCP {
                 // PF re-evaluates route-to packets on the capture TUN interface.

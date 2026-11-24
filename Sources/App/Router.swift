@@ -11,6 +11,7 @@ final class Router: ObservableObject {
     @Published private(set) var connection: NEVPNStatus = .invalid
     @Published private(set) var error: String?
     @Published private(set) var proxyPermission = ProxyPermission.isInstalled
+    @Published private(set) var recoveryPending = false
     @Published private var awaitingApproval = false
     @Published private var preparingPermission = false
 
@@ -35,13 +36,14 @@ final class Router: ObservableObject {
     }
     var wantsRouting: Bool { isLocal ? tun != nil : enabled }
     var rulesLocked: Bool {
-        busy || wantsRouting || (isInstallable && ![.invalid, .disconnected].contains(connection))
+        busy || wantsRouting || recoveryPending || (isInstallable && ![.invalid, .disconnected].contains(connection))
     }
     var isRouting: Bool { (isLocal ? enabled : connection == .connected) && !busy }
     var hasAssignedApps: Bool { routeGroups.groups.contains { !$0.apps.isEmpty } }
     var status: String {
         if isLocal {
             if busy {
+                if recoveryPending { return "Восстанавливаем сеть…" }
                 if tun?.stopping == true { return "Восстанавливаем системные маршруты…" }
                 if preparingPermission { return "Подтверди настройку SplitLane в окне macOS" }
                 return isProxyMode && proxyPermission
@@ -50,11 +52,12 @@ final class Router: ObservableObject {
             if enabled {
                 if isProxyMode {
                     return routeGroups.rules.contains(where: \.usesTUNInProxyMode)
-                        ? "Правила включены · полная изоляция (TUN)" : "Правила включены · HTTP и HTTPS"
+                        ? "Правила включены · перехват TCP/UDP (TUN)" : "Правила включены · HTTP и HTTPS"
                 }
                 return "Правила включены для новых соединений"
             }
             if wantsRouting { return "Ожидаем активное подключение…" }
+            if recoveryPending { return "Требуется восстановление сети" }
             return "Правила выключены"
         }
         if !isInstallable { return "Предпросмотр · правила сохранены на этом Mac" }
@@ -68,9 +71,13 @@ final class Router: ObservableObject {
     init() {
         do { routeGroups = try RouteGroups.load(from: .standard) }
         catch { self.error = "Не удалось открыть сохранённые сетевые группы." }
+        recoveryPending = isProxyMode && ProxyOverlaySettings.recoveryPending
     }
 
     func refresh() async {
+        if isProxyMode && !busy && !wantsRouting {
+            recoveryPending = ProxyOverlaySettings.recoveryPending
+        }
         guard isInstallable else { return }
         do {
             manager = try await loadManager()
@@ -136,7 +143,7 @@ final class Router: ObservableObject {
 
     func toggle() {
         if isLocal {
-            guard !busy else { return }
+            guard !busy, !recoveryPending else { return }
             if let tun {
                 busy = true
                 tun.stop()
@@ -146,6 +153,20 @@ final class Router: ObservableObject {
         } else {
             guard enabled || !rulesLocked else { return }
             apply(routeGroups, enable: !enabled)
+        }
+    }
+
+    func recoverLocalNetwork() {
+        guard isProxyMode, recoveryPending, !busy, !wantsRouting else { return }
+        busy = true
+        error = nil
+        Task {
+            defer {
+                recoveryPending = ProxyOverlaySettings.recoveryPending
+                busy = false
+            }
+            do { try await Task.detached(priority: .userInitiated) { try TunSession.recoverNetwork() }.value }
+            catch { self.error = error.localizedDescription }
         }
     }
 
@@ -201,6 +222,7 @@ final class Router: ObservableObject {
                 enabled = false
                 preparingPermission = false
                 proxyPermission = ProxyPermission.isInstalled
+                recoveryPending = useProxy && ProxyOverlaySettings.recoveryPending
                 busy = false
             }
             do {

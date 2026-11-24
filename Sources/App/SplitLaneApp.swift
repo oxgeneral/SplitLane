@@ -580,7 +580,11 @@ struct RoutesView: View {
                 .fixedSize()
                 .accessibilityLabel("Настройки SplitLane")
                 .help("Настройки SplitLane")
-                if router.canRoute && (router.wantsRouting || router.hasAssignedApps) {
+                if router.recoveryPending {
+                    Button("Восстановить сеть") { router.recoverLocalNetwork() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(router.busy)
+                } else if router.canRoute && (router.wantsRouting || router.hasAssignedApps) {
                     Button(router.wantsRouting ? "Выключить правила" : router.startTitle) {
                         router.toggle()
                     }
@@ -588,7 +592,11 @@ struct RoutesView: View {
                     .disabled(router.busy || (!router.wantsRouting && router.rulesLocked))
                 }
             }
-            if router.isRouting {
+            if router.recoveryPending && !router.busy {
+                Text("Остались настройки предыдущего сеанса. Восстановление снимет аварийную блокировку и вернёт системные настройки.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if router.isRouting {
                 Text("Правила действуют для новых соединений. Если приложение уже было открыто, перезапусти его.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

@@ -4,8 +4,8 @@ cd "$(dirname "$0")"
 
 mode="${1:-preview}"
 case "$mode" in
-    preview|test|signed|tun|local|standalone|release) ;;
-    *) echo "Usage: ./build.sh [preview|test|signed|tun|local|standalone|release]" >&2; exit 2 ;;
+    preview|test|signed|tun|local|standalone|adhoc|release) ;;
+    *) echo "Usage: ./build.sh [preview|test|signed|tun|local|standalone|adhoc|release]" >&2; exit 2 ;;
 esac
 
 mkdir -p .build
@@ -29,12 +29,13 @@ if [[ "$mode" == signed ]]; then
     app_id="$SPLITLANE_BUNDLE_ID"
     [[ -f "$SPLITLANE_APP_PROFILE" && -f "$SPLITLANE_EXTENSION_PROFILE" ]]
     [[ "$app_id" =~ ^[a-zA-Z0-9.-]+$ && "$SPLITLANE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]]
-elif [[ "$mode" == release ]]; then
-    : "${SPLITLANE_SIGN_IDENTITY:?Set the Developer ID Application signing identity}"
-    : "${SPLITLANE_BUNDLE_ID:?Set the permanent release bundle identifier}"
+elif [[ "$mode" == release || "$mode" == adhoc ]]; then
+    if [[ "$mode" == release ]]; then
+        : "${SPLITLANE_BUNDLE_ID:?Set the permanent release bundle identifier}"
+    fi
+    app_id="${SPLITLANE_BUNDLE_ID:-io.github.oxgeneral.splitlane}"
     : "${SPLITLANE_RELEASE_VERSION:?Set the release version, for example 0.1.0}"
     : "${SPLITLANE_BUILD_NUMBER:?Set the release build number}"
-    app_id="$SPLITLANE_BUNDLE_ID"
     version="$SPLITLANE_RELEASE_VERSION"
     build_number="$SPLITLANE_BUILD_NUMBER"
     if [[ ! "$app_id" =~ ^[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+$ ||
@@ -42,6 +43,10 @@ elif [[ "$mode" == release ]]; then
         echo "Check the release bundle identifier, version (X.Y.Z) and build number (positive integer)." >&2
         exit 2
     fi
+fi
+
+if [[ "$mode" == release ]]; then
+    : "${SPLITLANE_SIGN_IDENTITY:?Set the Developer ID Application signing identity}"
     identities="$(security find-identity -v -p codesigning)"
     if ! printf '%s\n' "$identities" | awk -v identity="$SPLITLANE_SIGN_IDENTITY" '
         /"Developer ID Application: / {
@@ -61,6 +66,8 @@ sign_options=()
 local_signing_identity=""
 if [[ "$mode" == release ]]; then
     sign_options=(--timestamp --options runtime --sign "$SPLITLANE_SIGN_IDENTITY")
+elif [[ "$mode" == adhoc ]]; then
+    sign_options=(--sign -)
 elif [[ "$mode" != signed ]]; then
     local_signing_identity="${SPLITLANE_LOCAL_SIGN_IDENTITY:-}"
     if [[ -z "$local_signing_identity" && -f .build/local-signing-identity ]]; then
@@ -97,7 +104,7 @@ cp Sources/App/Resources/AppIcon.icns "$app/Contents/Resources/"
 plutil -insert CFBundleIconFile -string AppIcon.icns "$plist"
 "${compiler[@]}" Sources/Shared/*.swift Sources/App/*.swift -o "$app/Contents/MacOS/SplitLane"
 
-if [[ "$mode" == tun || "$mode" == local || "$mode" == standalone || "$mode" == release ]]; then
+if [[ "$mode" == tun || "$mode" == local || "$mode" == standalone || "$mode" == adhoc || "$mode" == release ]]; then
     engine_stamp=.build/engines/sing-box-local.stamp
     if [[ ! -x .build/engines/sing-box-local || ! -f "$engine_stamp" || build-engine.sh -nt "$engine_stamp" ||
           Sources/Engine/darwin-udp-owner.patch -nt "$engine_stamp" || Tests/DarwinUDPOwner_test.go -nt "$engine_stamp" ||

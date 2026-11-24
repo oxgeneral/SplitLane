@@ -295,7 +295,7 @@ struct GroupEditor: View {
                     get: { group.usesTUNInProxyMode },
                     set: { group.useTUN = $0 }
                 ))
-                Text("Применяет маршрут группы к приложениям, которые подключаются в обход системного прокси. Для новых соединений.")
+                Text("Применяет маршрут группы к новым соединениям в обход прокси. Запросы к системному DNS могут идти через macOS.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
