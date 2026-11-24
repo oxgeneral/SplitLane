@@ -17,9 +17,9 @@ if [[ "$mode" == test ]]; then
     exit
 fi
 
-app_id="local.splitlane.preview"
-version=0.1
-build_number=1
+app_id="${SPLITLANE_BUNDLE_ID:-local.splitlane.preview}"
+version="${SPLITLANE_RELEASE_VERSION:-0.1}"
+build_number="${SPLITLANE_BUILD_NUMBER:-1}"
 if [[ "$mode" == signed ]]; then
     : "${SPLITLANE_SIGN_IDENTITY:?Set the Developer ID Application signing identity}"
     : "${SPLITLANE_APP_PROFILE:?Set the path to the app provisioning profile}"
