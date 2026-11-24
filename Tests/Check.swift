@@ -54,6 +54,15 @@ struct Check {
         precondition(groups.groups.count == 1 && groups.rules == [configured, secondApp])
         let oldGroup = groups.groups[0]
         let newGroup = RouteGroup(name: "Прокси", route: route)
+        var firstSetup = RouteGroups()
+        firstSetup.save(newGroup, assigning: [oldGroup.apps[0]])
+        let reloadedSetup = try JSONDecoder().decode(RouteGroups.self, from: firstSetup.encoded())
+        precondition(reloadedSetup.groups.count == 1 && reloadedSetup.rules.map(\.path) == [configured.path])
+
+        var moveOnCreate = groups
+        moveOnCreate.save(newGroup, assigning: [oldGroup.apps[1], oldGroup.apps[1]])
+        let reloadedMove = try JSONDecoder().decode(RouteGroups.self, from: moveOnCreate.encoded())
+        precondition(reloadedMove.groups.map(\.apps) == [[oldGroup.apps[0]], [oldGroup.apps[1]]])
         groups.save(newGroup)
         groups.assign(oldGroup.apps[1], to: newGroup.id)
         groups.assign(oldGroup.apps[1], to: newGroup.id)

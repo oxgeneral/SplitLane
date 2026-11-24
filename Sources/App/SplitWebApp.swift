@@ -37,6 +37,7 @@ private final class SplitWebDelegate: NSObject, NSApplicationDelegate {
     private let router = Router()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let panel = NSPopover()
+    private var mainWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem.button?.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: "SplitWebOnMac")
@@ -50,11 +51,12 @@ private final class SplitWebDelegate: NSObject, NSApplicationDelegate {
                 if showPanel() { return }
                 try? await Task.sleep(for: .milliseconds(50))
             }
+            showMainWindow()
         }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        showPanel()
+        if !showPanel() { showMainWindow() }
         return false
     }
 
@@ -84,6 +86,11 @@ private final class SplitWebDelegate: NSObject, NSApplicationDelegate {
 
     @discardableResult
     private func showPanel() -> Bool {
+        if let mainWindow, mainWindow.isVisible {
+            mainWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate()
+            return true
+        }
         if panel.isShown { return true }
         guard let button = statusItem.button, let window = button.window, let screen = window.screen else { return false }
         let anchor = window.convertToScreen(button.convert(button.bounds, to: nil))
@@ -105,6 +112,21 @@ private final class SplitWebDelegate: NSObject, NSApplicationDelegate {
             panelWindow.makeKey()
         }
         return panel.isShown
+    }
+
+    private func showMainWindow() {
+        if mainWindow == nil {
+            let screen = NSScreen.main?.visibleFrame.height ?? 600
+            let host = NSHostingController(rootView: RoutesView(router: router, maxHeight: screen - 48))
+            let window = NSWindow(contentViewController: host)
+            window.title = "SplitWebOnMac"
+            window.styleMask = [.titled, .closable]
+            window.isReleasedWhenClosed = false
+            window.center()
+            mainWindow = window
+        }
+        mainWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate()
     }
 }
 
@@ -162,10 +184,11 @@ private struct GroupAppLabel: View {
 struct RoutesView: View {
     @ObservedObject var router: Router
     let maxHeight: CGFloat
+    @AppStorage("hasEnabledRouting") private var hasEnabledRouting = false
     @State private var selection: RouteGroup?
     @State private var choosingApp = false
     @State private var dropTarget: UUID?
-    @State private var invalidAppDrop = false
+    @State private var invalidAppMessage: String?
     @State private var networks = NetworkChoices()
     @State private var appLaunchError: String?
     @State private var appRestart: (app: GroupApp, identifier: String, running: NSRunningApplication)?
@@ -185,10 +208,13 @@ struct RoutesView: View {
         .fixedSize(horizontal: false, vertical: true)
         .frame(width: 550)
         .background(Color(nsColor: .windowBackgroundColor))
-        .alert("Не удалось добавить приложения", isPresented: $invalidAppDrop) {
+        .alert("Не удалось добавить приложения", isPresented: Binding(
+            get: { invalidAppMessage != nil },
+            set: { if !$0 { invalidAppMessage = nil } }
+        ), presenting: invalidAppMessage) { _ in
             Button("OK", role: .cancel) {}
-        } message: {
-            Text("Перетащи файлы .app из Finder.")
+        } message: { message in
+            Text(message)
         }
         .alert("Не удалось открыть приложение", isPresented: Binding(
             get: { appLaunchError != nil },
@@ -211,9 +237,12 @@ struct RoutesView: View {
         }
         .sheet(item: $selection) { group in
             GroupEditor(group: group, editing: router.routeGroups.groups.contains { $0.id == group.id }, save: router.save,
+                        networksLoaded: networks.loaded,
                         interfaces: networks.interfaces, vpns: networks.vpns, vpnApps: networks.vpnApps,
-                        connectedVPNApps: networks.connectedVPNApps, supportsWireGuard: router.isProxyMode,
-                        supportsAmnezia: router.isProxyMode || !router.canRoute,
+                        connectedVPNApps: networks.connectedVPNApps, connectedVPNProfiles: networks.connectedProfiles,
+                        supportsWireGuard: router.isProxyMode,
+                        supportsAmnezia: !router.canRoute || (router.isProxyMode &&
+                            (bundledAmnezia != nil || networks.amneziaReady || group.route.kind == .amnezia)),
                         supportsProxyCredentials: !router.isInstallable,
                         supportsUDPBlocking: router.isInstallable || router.isProxyMode,
                         usesSystemUDPFilter: router.isProxyMode, supportsGroupTUN: router.isProxyMode)
@@ -232,6 +261,9 @@ struct RoutesView: View {
         .onReceive(NotificationCenter.default.publisher(for: .NEVPNStatusDidChange)) { _ in
             router.updateConnectionStatus()
         }
+        .onChange(of: router.isRouting, initial: true) { _, isRouting in
+            if isRouting { hasEnabledRouting = true }
+        }
     }
 
     private func panelContents<Content: View>(@ViewBuilder list: () -> Content) -> some View {
@@ -249,9 +281,17 @@ struct RoutesView: View {
     @ViewBuilder
     private var groupList: some View {
         if router.routeGroups.groups.isEmpty {
-            ContentUnavailableView("Пока нет групп", systemImage: "arrow.triangle.branch",
-                                   description: Text("Создай группу для приложений, которым нужен свой выход в интернет."))
-                .frame(maxWidth: .infinity, minHeight: 160)
+            ContentUnavailableView {
+                Label("Настрой первую сетевую группу", systemImage: "arrow.triangle.branch")
+            } description: {
+                Text("Выбери Wi‑Fi, Ethernet, VPN или прокси и добавь приложения, которые будут использовать этот выход.")
+            } actions: {
+                Button("Создать группу") { selection = RouteGroup() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut("n", modifiers: .command)
+                    .disabled(router.rulesLocked)
+            }
+            .frame(maxWidth: .infinity, minHeight: 180)
         } else {
             VStack(spacing: 0) {
                 ForEach(router.routeGroups.groups) { group in
@@ -271,15 +311,17 @@ struct RoutesView: View {
             if choosingApp {
                 ProgressView().controlSize(.small).accessibilityLabel("Выбор приложения")
             }
-            Button {
-                selection = RouteGroup()
-            } label: {
-                Label("Новая группа", systemImage: "plus")
+            if !router.routeGroups.groups.isEmpty {
+                Button {
+                    selection = RouteGroup()
+                } label: {
+                    Label("Новая группа", systemImage: "plus")
+                }
+                .buttonStyle(.bordered)
+                .keyboardShortcut("n", modifiers: .command)
+                .disabled(choosingApp || router.rulesLocked)
+                .help(router.rulesLocked ? "Выключи правила, чтобы изменить список" : "Создать сетевую группу")
             }
-            .buttonStyle(.bordered)
-            .keyboardShortcut("n", modifiers: .command)
-            .disabled(choosingApp || router.rulesLocked)
-            .help(router.rulesLocked ? "Выключи правила, чтобы изменить список" : "Создать сетевую группу")
         }
     }
 
@@ -351,7 +393,12 @@ struct RoutesView: View {
                     choosingApp = true
                     Task {
                         defer { choosingApp = false }
-                        router.assign(await pickGroupApps(), to: group.id)
+                        guard let apps = await pickGroupApps() else { return }
+                        if apps.isEmpty {
+                            invalidAppMessage = "Выбери приложение .app. Сам SplitWebOnMac в группу добавить нельзя."
+                        } else {
+                            router.assign(apps, to: group.id)
+                        }
                     }
                 } label: {
                     Label("Добавить приложения", systemImage: "plus")
@@ -437,8 +484,11 @@ struct RoutesView: View {
                 for await url in transfer { urls.append(url) }
             }
             let apps = await groupApps(from: urls, knownApps: router.routeGroups.groups.flatMap(\.apps))
-            if apps.isEmpty { invalidAppDrop = true }
-            else { router.assign(apps, to: groupID) }
+            if apps.isEmpty {
+                invalidAppMessage = "Перетащи файлы .app из Finder. Сам SplitWebOnMac в группу добавить нельзя."
+            } else {
+                router.assign(apps, to: groupID)
+            }
         }
         return true
     }
@@ -537,6 +587,16 @@ struct RoutesView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(router.busy || (!router.wantsRouting && router.rulesLocked))
                 }
+            }
+            if router.isRouting {
+                Text("Правила действуют для новых соединений. Если приложение уже было открыто, перезапусти его.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if router.isProxyMode && !hasEnabledRouting && router.hasAssignedApps &&
+                        !router.busy && !router.wantsRouting && router.error == nil {
+                Text("При включении правил macOS может запросить пароль администратора для временной настройки сети.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }

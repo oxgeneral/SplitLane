@@ -21,7 +21,7 @@ struct VPNProxyOverlay {
         let previous = SCDynamicStoreCopyValue(session, key) as? [String: Any]
         let state = SCDynamicStoreCopyValue(session, stateKey) as? [String: Any] ?? [:]
         guard !ProxyOverlaySettings.hasProxy(previous ?? [:]), !ProxyOverlaySettings.hasProxy(state) else {
-            throw Self.failure("В VPN уже настроен другой прокси.")
+            throw Self.failure("В VPN уже настроен другой системный прокси. Отключи его в настройках VPN-клиента и повтори запуск.")
         }
         let installed = ProxyOverlaySettings.installing(on: previous ?? [:], port: port)
         // The temporary key disappears even on SIGKILL. Existing inactive

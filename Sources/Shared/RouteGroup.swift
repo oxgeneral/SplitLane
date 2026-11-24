@@ -48,12 +48,13 @@ struct RouteGroups: Codable, Equatable, Sendable {
         }
     }
 
-    mutating func save(_ group: RouteGroup) {
+    mutating func save(_ group: RouteGroup, assigning apps: [GroupApp] = []) {
         if let index = groups.firstIndex(where: { $0.id == group.id }) {
             groups[index] = group
         } else {
             groups.append(group)
         }
+        for app in apps { assign(app, to: group.id) }
     }
 
     mutating func assign(_ app: GroupApp, to groupID: UUID) {

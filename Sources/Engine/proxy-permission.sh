@@ -26,6 +26,11 @@ trap '/bin/rm -rf "$stage"' EXIT
 printf '%s  %s\n%s  %s\n' "$4" "$stage/overlay" "$7" "$stage/engine" | /usr/bin/shasum -a 256 -c >/dev/null
 permission_rule "$uid" "$4" "$5" > "$stage/sudoers"
 /usr/sbin/visudo -cf "$stage/sudoers" >/dev/null
+for directory in "${helper%/*}" "${rule%/*}"; do
+    if [[ ! -d "$directory" ]]; then
+        /usr/bin/install -d -o root -g wheel -m 0755 "$directory"
+    fi
+done
 /usr/bin/install -o root -g wheel -m 0755 "$stage/overlay" "$helper"
 /usr/bin/install -o root -g wheel -m 0755 "$stage/engine" "$helper.engine"
 /usr/bin/install -o root -g wheel -m 0440 "$stage/sudoers" "$rule"

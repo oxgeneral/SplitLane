@@ -2,9 +2,17 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+mode="${1:-build}"
+case "$mode" in
+    build|test) ;;
+    *) echo "Usage: ./build-engine.sh [build|test [go test flags]]" >&2; exit 2 ;;
+esac
+if [[ $# -gt 0 ]]; then shift; fi
+
 mkdir -p .build/engines
 out="$PWD/.build/engines"
-source_dir="$(go mod download -json github.com/sagernet/sing-box@v1.14.1 | plutil -extract Dir raw -o - -)"
+upstream_version=v1.14.1
+source_dir="$(go mod download -json "github.com/sagernet/sing-box@$upstream_version" | plutil -extract Dir raw -o - -)"
 stage="$(mktemp -d "$out/source.XXXXXX")"
 trap 'chmod -R u+w "$stage"; rm -rf "$stage"' EXIT
 ditto "$source_dir" "$stage/sing-box"
@@ -33,8 +41,24 @@ sed -i '' '/^func New(ctx context.Context, options option.DialerOptions, remoteI
 ' "$factory"
 (
     cd "$stage/sing-box"
-    CGO_ENABLED=1 go test ./common/process ./route ./common/dialer ./dns/transport/local/systemconfig -run 'Test(DarwinUDPOwner|DarwinTCPOwner|DarwinResolveAppOwner|DarwinScopedDNS|UDPOwnerGuard|SplitWebVPN|UDPScope)'
-    CGO_ENABLED=1 go build -trimpath -tags 'with_gvisor,with_wireguard' -o "$stage/sing-box-local" ./cmd/sing-box
+    export MACOSX_DEPLOYMENT_TARGET=15.0
+    export CGO_CFLAGS="${CGO_CFLAGS:+$CGO_CFLAGS }-mmacosx-version-min=15.0"
+    export CGO_LDFLAGS="${CGO_LDFLAGS:+$CGO_LDFLAGS }-mmacosx-version-min=15.0"
+    export CGO_ENABLED=1
+    if [[ "$mode" == test ]]; then
+        go test ./common/process ./route ./common/dialer ./dns/transport/local/systemconfig \
+            -run 'Test(DarwinUDPOwner|DarwinTCPOwner|DarwinResolveAppOwner|DarwinScopedDNS|UDPOwnerGuard|SplitWebVPN|UDPScope)' "$@"
+    else
+        go build -buildvcs=false -trimpath -tags 'with_gvisor,with_wireguard' \
+            -ldflags "-X github.com/sagernet/sing-box/constant.Version=${upstream_version#v}-splitweb" \
+            -o "$stage/sing-box-local" ./cmd/sing-box
+    fi
 )
+if [[ "$mode" == test ]]; then exit 0; fi
+minimum="$(xcrun vtool -show-build "$stage/sing-box-local" | awk '$1 == "minos" { print $2 }')"
+if [[ "$minimum" != 15.0 ]]; then
+    printf 'Expected a macOS 15.0 engine, got minimum version %s.\n' "${minimum:-unknown}" >&2
+    exit 1
+fi
 mv "$stage/sing-box-local" "$out/sing-box-local"
 touch "$out/sing-box-local.stamp"

@@ -4,12 +4,13 @@ cd "$(dirname "$0")"
 
 mode="${1:-preview}"
 case "$mode" in
-    preview|test|signed|tun|local|standalone) ;;
-    *) echo "Usage: ./build.sh [preview|test|signed|tun|local|standalone]" >&2; exit 2 ;;
+    preview|test|signed|tun|local|standalone|release) ;;
+    *) echo "Usage: ./build.sh [preview|test|signed|tun|local|standalone|release]" >&2; exit 2 ;;
 esac
 
 mkdir -p .build
-compiler=(xcrun swiftc -swift-version 5 -target "$(uname -m)-apple-macos15.0")
+arch="$(uname -m)"
+compiler=(xcrun swiftc -module-cache-path "$PWD/.build/ModuleCache" -swift-version 5 -target "$arch-apple-macos15.0")
 if [[ "$mode" == test ]]; then
     "${compiler[@]}" Sources/Shared/*.swift Tests/{Check,ProxyPermissionCheck,NetworkAdaptationCheck}.swift -o .build/check
     .build/check
@@ -17,6 +18,8 @@ if [[ "$mode" == test ]]; then
 fi
 
 app_id="local.splitwebonmac.preview"
+version=0.1
+build_number=1
 if [[ "$mode" == signed ]]; then
     : "${SPLITWEB_SIGN_IDENTITY:?Set the Developer ID Application signing identity}"
     : "${SPLITWEB_APP_PROFILE:?Set the path to the app provisioning profile}"
@@ -26,6 +29,44 @@ if [[ "$mode" == signed ]]; then
     app_id="$SPLITWEB_BUNDLE_ID"
     [[ -f "$SPLITWEB_APP_PROFILE" && -f "$SPLITWEB_EXTENSION_PROFILE" ]]
     [[ "$app_id" =~ ^[a-zA-Z0-9.-]+$ && "$SPLITWEB_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]]
+elif [[ "$mode" == release ]]; then
+    : "${SPLITWEB_SIGN_IDENTITY:?Set the Developer ID Application signing identity}"
+    : "${SPLITWEB_BUNDLE_ID:?Set the permanent release bundle identifier}"
+    : "${SPLITWEB_RELEASE_VERSION:?Set the release version, for example 0.1.0}"
+    : "${SPLITWEB_BUILD_NUMBER:?Set the release build number}"
+    app_id="$SPLITWEB_BUNDLE_ID"
+    version="$SPLITWEB_RELEASE_VERSION"
+    build_number="$SPLITWEB_BUILD_NUMBER"
+    if [[ ! "$app_id" =~ ^[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+$ ||
+          ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$build_number" =~ ^[1-9][0-9]*$ ]]; then
+        echo "Check the release bundle identifier, version (X.Y.Z) and build number (positive integer)." >&2
+        exit 2
+    fi
+    identities="$(security find-identity -v -p codesigning)"
+    if ! printf '%s\n' "$identities" | awk -v identity="$SPLITWEB_SIGN_IDENTITY" '
+        /"Developer ID Application: / {
+            name = $0
+            sub(/^[^"]*"/, "", name)
+            sub(/".*$/, "", name)
+            if (name == identity || $2 == identity) found = 1
+        }
+        END { exit !found }
+    '; then
+        echo "The Developer ID Application identity is unavailable. Check the certificate and private key." >&2
+        exit 1
+    fi
+fi
+
+sign_options=()
+local_signing_identity=""
+if [[ "$mode" == release ]]; then
+    sign_options=(--timestamp --options runtime --sign "$SPLITWEB_SIGN_IDENTITY")
+elif [[ "$mode" != signed ]]; then
+    local_signing_identity="${SPLITWEB_LOCAL_SIGN_IDENTITY:-}"
+    if [[ -z "$local_signing_identity" && -f .build/local-signing-identity ]]; then
+        IFS= read -r local_signing_identity < .build/local-signing-identity
+    fi
+    sign_options=(--sign "${local_signing_identity:--}")
 fi
 
 out="$(mktemp -d "$PWD/.build/staging.XXXXXX")"
@@ -43,8 +84,8 @@ bundle_info() {
   <key>CFBundleExecutable</key><string>$3</string>
   <key>CFBundleName</key><string>SplitWebOnMac</string>
   <key>CFBundlePackageType</key><string>$4</string>
-  <key>CFBundleShortVersionString</key><string>0.1</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>$version</string>
+  <key>CFBundleVersion</key><string>$build_number</string>
   <key>LSMinimumSystemVersion</key><string>15.0</string>
 </dict></plist>
 PLIST
@@ -55,9 +96,8 @@ plutil -insert LSUIElement -bool YES "$plist"
 cp Sources/App/Resources/AppIcon.icns "$app/Contents/Resources/"
 plutil -insert CFBundleIconFile -string AppIcon.icns "$plist"
 "${compiler[@]}" Sources/Shared/*.swift Sources/App/*.swift -o "$app/Contents/MacOS/SplitWebOnMac"
-"${compiler[@]}" -module-name SplitWebProxy Sources/Shared/*.swift Sources/Extension/*.swift -lbsm -o "$out/SplitWebProxy"
 
-if [[ "$mode" == tun || "$mode" == local || "$mode" == standalone ]]; then
+if [[ "$mode" == tun || "$mode" == local || "$mode" == standalone || "$mode" == release ]]; then
     engine_stamp=.build/engines/sing-box-local.stamp
     if [[ ! -x .build/engines/sing-box-local || ! -f "$engine_stamp" || build-engine.sh -nt "$engine_stamp" ||
           Sources/Engine/darwin-udp-owner.patch -nt "$engine_stamp" || Tests/DarwinUDPOwner_test.go -nt "$engine_stamp" ||
@@ -67,18 +107,23 @@ if [[ "$mode" == tun || "$mode" == local || "$mode" == standalone ]]; then
           Sources/Engine/udp_owner_guard.go -nt "$engine_stamp" || Tests/UDPOwnerGuard_test.go -nt "$engine_stamp" ||
           Sources/Engine/vpn_app_darwin.go -nt "$engine_stamp" || Sources/Engine/webkit_darwin.go -nt "$engine_stamp" ||
           Tests/VPNServiceBinding_test.go -nt "$engine_stamp" ||
-          Sources/Engine/amnezia_darwin.go -nt "$engine_stamp" ]]; then
+          Sources/Engine/amnezia_darwin.go -nt "$engine_stamp" ]] ||
+          ! xcrun lipo .build/engines/sing-box-local -verify_arch "$arch"; then
         ./build-engine.sh
     fi
-    cp .build/engines/sing-box-local "$app/Contents/Resources/sing-box"
+    engine="$app/Contents/MacOS/sing-box"
+    cp .build/engines/sing-box-local "$engine"
+    codesign --force --identifier "$app_id.engine" "${sign_options[@]}" "$engine"
     cp Sources/Engine/run-tun.sh "$app/Contents/Resources/run-tun.sh"
-    engine_sha="$(shasum -a 256 "$app/Contents/Resources/sing-box" | awk '{print $1}')"
+    engine_sha="$(shasum -a 256 "$engine" | awk '{print $1}')"
     plutil -insert SplitWebEngineSHA -string "$engine_sha" "$plist"
     if [[ "$mode" != tun ]]; then
+        helper="$app/Contents/MacOS/proxy-overlay"
         "${compiler[@]}" -parse-as-library Sources/Tools/{ProxyOverlay,PacketCapture,VPNProxyOverlay}.swift \
-            Sources/Shared/{SystemTimeZoneCommand,PacketRoutingConfiguration,ProxyOverlaySettings,ProxyOverlayRequest}.swift -o "$app/Contents/Resources/proxy-overlay"
+            Sources/Shared/{SystemTimeZoneCommand,PacketRoutingConfiguration,ProxyOverlaySettings,ProxyOverlayRequest}.swift -o "$helper"
+        codesign --force --identifier "$app_id.proxy-overlay" "${sign_options[@]}" "$helper"
         cp Sources/Engine/run-proxy.sh Sources/Engine/run-engine.sh Sources/Engine/proxy-permission.sh "$app/Contents/Resources/"
-        helper_sha="$(shasum -a 256 "$app/Contents/Resources/proxy-overlay" | awk '{print $1}')"
+        helper_sha="$(shasum -a 256 "$helper" | awk '{print $1}')"
         plutil -insert SplitWebProxyOverlaySHA -string "$helper_sha" "$plist"
     fi
 fi
@@ -98,7 +143,8 @@ if [[ "$mode" == signed ]]; then
     extension="$app/Contents/Library/SystemExtensions/$extension_id.systemextension"
     extension_plist="$extension/Contents/Info.plist"
     mkdir -p "$extension/Contents/MacOS"
-    mv "$out/SplitWebProxy" "$extension/Contents/MacOS/$extension_id"
+    "${compiler[@]}" -module-name SplitWebProxy Sources/Shared/*.swift Sources/Extension/*.swift -lbsm \
+        -o "$extension/Contents/MacOS/$extension_id"
     bundle_info "$extension_plist" "$extension_id" "$extension_id" SYSX
 
     plutil -insert SplitWebRoutingBuild -bool YES "$plist"
@@ -129,14 +175,10 @@ PLIST
     codesign --force --timestamp --options runtime --sign "$SPLITWEB_SIGN_IDENTITY" --entitlements "$out/extension.entitlements" "$extension"
     codesign --force --timestamp --options runtime --sign "$SPLITWEB_SIGN_IDENTITY" --entitlements "$out/app.entitlements" "$app"
 else
-    local_signing_identity="${SPLITWEB_LOCAL_SIGN_IDENTITY:-}"
-    if [[ -z "$local_signing_identity" && -f .build/local-signing-identity ]]; then
-        IFS= read -r local_signing_identity < .build/local-signing-identity
-    fi
-    codesign --force --sign "${local_signing_identity:--}" "$app"
+    codesign --force "${sign_options[@]}" "$app"
 fi
 codesign --verify --deep --strict "$app"
-if [[ "$mode" != signed && -n "${local_signing_identity:-}" && "$local_signing_identity" != - ]]; then
+if [[ -n "$local_signing_identity" && "$local_signing_identity" != - ]]; then
     printf '%s\n' "$local_signing_identity" > .build/local-signing-identity
 fi
 

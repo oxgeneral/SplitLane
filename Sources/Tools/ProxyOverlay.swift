@@ -54,7 +54,9 @@ struct ProxyOverlay {
         try restore()
         try cleanLegacyVPNProxies()
         try PacketCapture.recover()
-        guard !primaryServices(store).isEmpty else { throw failure("Нет активного сетевого подключения.") }
+        guard !primaryServices(store).isEmpty else {
+            throw failure("Подключись к Wi‑Fi или Ethernet и снова нажми «Включить правила».")
+        }
 
         func active() throws -> Bool {
             var status = stat()
@@ -204,7 +206,7 @@ struct ProxyOverlay {
                 let stateKey = "State:/Network/Service/\(id)/Proxies" as CFString
                 let state = SCDynamicStoreCopyValue(store, stateKey) as? [String: Any] ?? [:]
                 guard let original = ProxyOverlaySettings.baseline(current, state: state, port: port) else {
-                    throw failure("В активном подключении уже настроен другой прокси. Его настройки сохранены.")
+                    throw failure("В активном подключении уже настроен другой прокси или PAC. Отключи его в системных настройках сети и повтори запуск.")
                 }
                 let changed = ProxyOverlaySettings.installing(on: original, port: port)
                 backup[id] = ["original": original, "installed": changed]

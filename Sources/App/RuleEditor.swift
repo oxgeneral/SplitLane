@@ -4,7 +4,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 @MainActor
-func pickGroupApps() async -> [GroupApp] {
+func pickGroupApps() async -> [GroupApp]? {
     let panel = NSOpenPanel()
     panel.directoryURL = URL(fileURLWithPath: "/Applications")
     panel.allowedContentTypes = [.applicationBundle]
@@ -14,13 +14,13 @@ func pickGroupApps() async -> [GroupApp] {
 
     let response: NSApplication.ModalResponse = await withCheckedContinuation { continuation in
         let completed: (NSApplication.ModalResponse) -> Void = { continuation.resume(returning: $0) }
-        if let window = NSApp.keyWindow {
+        if let window = NSApp.keyWindow, !window.isSheet {
             panel.beginSheetModal(for: window, completionHandler: completed)
         } else {
             panel.begin(completionHandler: completed)
         }
     }
-    return response == .OK ? await groupApps(from: panel.urls) : []
+    return response == .OK ? await groupApps(from: panel.urls) : nil
 }
 
 func groupApps(from urls: [URL], knownApps: [GroupApp] = []) async -> [GroupApp] {
@@ -59,13 +59,18 @@ struct GroupEditor: View {
     @State private var credentialsLoaded = false
     @State private var saving = false
     @State private var errorMessage: String?
+    @State private var selectedApps: [GroupApp] = []
+    @State private var choosingApps = false
+    @State private var invalidSelection = false
     let editing: Bool
-    let save: (RouteGroup, ProxyCredentials?) async throws -> Void
+    let save: (RouteGroup, ProxyCredentials?, [GroupApp]) async throws -> Void
 
+    let networksLoaded: Bool
     let interfaces: [NetworkChoice]
     let vpns: [NetworkChoice]
     let vpnApps: [NetworkChoice]
     let connectedVPNApps: Set<String>
+    let connectedVPNProfiles: Set<String>
     let supportsWireGuard: Bool
     let supportsAmnezia: Bool
     let supportsProxyCredentials: Bool
@@ -108,9 +113,6 @@ struct GroupEditor: View {
                     case .proxy: group.route = Route(kind: .socks5)
                     }
                 }
-                if selection == .direct, group.route.target.isEmpty {
-                    group.route.target = interfaces.first?.id ?? ""
-                }
             }
         )
     }
@@ -132,10 +134,7 @@ struct GroupEditor: View {
                 case .app(let id): group.route = Route(kind: .vpnApp, target: id)
                 case .profile(let id): group.route = Route(kind: .vpn, target: id)
                 case .amnezia: group.route = Route(kind: .amnezia)
-                case .wireguard:
-                    group.route = Route(kind: .wireguard, interface: interfaces.first(where: {
-                        $0.name.hasPrefix("Wi-Fi")
-                    })?.id ?? interfaces.first?.id)
+                case .wireguard: group.route = Route(kind: .wireguard)
                 }
             }
         )
@@ -151,9 +150,6 @@ struct GroupEditor: View {
             Divider()
 
             Form {
-                Section {
-                    TextField("Название группы", text: $group.name, prompt: Text("По названию выхода"))
-                }
                 Section("Подключение") {
                     Picker("Способ подключения", selection: categorySelection) {
                         ForEach(Category.allCases, id: \.self) { category in
@@ -169,20 +165,19 @@ struct GroupEditor: View {
                         case .proxy: proxyFields
                         case .direct: directFields
                         }
-                        if supportsGroupTUN {
-                            Toggle("Перехватывать трафик через TUN", isOn: Binding(
-                                get: { group.usesTUNInProxyMode },
-                                set: { group.useTUN = $0 }
-                            ))
-                            Text("Применяет маршрут группы к приложениям, которые подключаются в обход системного прокси. Для новых соединений.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        udpProtection
+                    } else {
+                        Text("Выбери выход в интернет для приложений этой группы.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
                     }
                 }
+                if !editing { applicationSection }
                 Section {
-                    timeZoneField
+                    if editing {
+                        advancedFields
+                    } else {
+                        DisclosureGroup("Дополнительные настройки") { advancedFields }
+                    }
                 }
             }
             .formStyle(.grouped)
@@ -207,10 +202,18 @@ struct GroupEditor: View {
                     let auth = group.route.kind.isProxy && !credentials.isEmpty ? credentials : nil
                     var updated = group
                     updated.name = group.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let apps = selectedApps
                     Task {
                         defer { saving = false }
                         do {
-                            try await save(updated, auth)
+                            if updated.route.kind == .wireguard {
+                                let route = updated.route
+                                try await Task.detached(priority: .userInitiated) {
+                                    _ = try WireGuardProfile.read(URL(fileURLWithPath: route.target),
+                                                                  tag: "wireguard", interface: route.interface ?? "")
+                                }.value
+                            }
+                            try await save(updated, auth, apps)
                             dismiss()
                         } catch {
                             errorMessage = error.localizedDescription
@@ -219,11 +222,11 @@ struct GroupEditor: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
-                .disabled(!canSave)
+                .disabled(!canSave || choosingApps)
             }
             .padding(16)
         }
-        .frame(width: 470, height: 440)
+        .frame(width: 470, height: 480)
         .disabled(saving)
         .task {
             guard supportsProxyCredentials, let id = group.route.proxyCredentialID else { return }
@@ -239,6 +242,65 @@ struct GroupEditor: View {
         }
         .fileImporter(isPresented: $selectingProfile, allowedContentTypes: [UTType(filenameExtension: "conf") ?? .data]) {
             if case .success(let url) = $0 { group.route.target = url.path }
+        }
+    }
+
+    private var applicationSection: some View {
+        Section("Приложения") {
+            ForEach(selectedApps) { app in
+                HStack {
+                    AppIcon(path: app.path)
+                    Text(app.name)
+                    Spacer()
+                    Button {
+                        selectedApps.removeAll { $0.id == app.id }
+                    } label: {
+                        Image(systemName: "minus.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Убрать \(app.name)")
+                }
+            }
+            Button {
+                choosingApps = true
+                Task {
+                    defer { choosingApps = false }
+                    guard let apps = await pickGroupApps() else { return }
+                    invalidSelection = apps.isEmpty
+                    for app in apps where !selectedApps.contains(where: { $0.id == app.id }) {
+                        selectedApps.append(app)
+                    }
+                }
+            } label: {
+                Label("Выбрать приложения…", systemImage: "plus")
+            }
+            .disabled(choosingApps)
+            if invalidSelection {
+                Text("Выбери приложение .app. Сам SplitWebOnMac в группу добавить нельзя.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else if selectedApps.isEmpty {
+                Text("Добавь хотя бы одно приложение, чтобы сразу включить правила.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var advancedFields: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("Название группы", text: $group.name, prompt: Text("По названию выхода"))
+            if supportsGroupTUN {
+                Toggle("Перехватывать трафик через TUN", isOn: Binding(
+                    get: { group.usesTUNInProxyMode },
+                    set: { group.useTUN = $0 }
+                ))
+                Text("Применяет маршрут группы к приложениям, которые подключаются в обход системного прокси. Для новых соединений.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            udpProtection
+            timeZoneField
         }
     }
 
@@ -279,17 +341,22 @@ struct GroupEditor: View {
                     Text("Выбери сеть").tag("")
                     ForEach(interfaces) { choice in Text(choice.name).tag(choice.id) }
                 }
+                physicalNetworkHint
             } else if group.route.kind == .amnezia {
                 Text("Нужна сборка AmneziaVPN с режимом для SplitWeb. Пока её выход закрыт, запросы группы будут блокироваться.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+            } else if !networksLoaded {
+                ProgressView("Ищем VPN…").controlSize(.small)
             } else if vpnApps.isEmpty && vpns.isEmpty && !supportsAmnezia {
-                Text("Подключи VPN в его приложении, чтобы добавить доступный маршрут.")
+                Text(supportsWireGuard
+                     ? "Добавь профиль в VPN-приложении и подключись. Если у тебя есть файл .conf, выбери «Отдельный WireGuard»."
+                     : "Добавь профиль в VPN-приложении и подключись.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-            } else if group.route.kind == .vpn ||
-                        (!group.route.target.isEmpty && !connectedVPNApps.contains(group.route.target)) {
-                Text("Если VPN выключен, подключи его в VPN-приложении.")
+            } else if !group.route.target.isEmpty, !(group.route.kind == .vpn
+                        ? connectedVPNProfiles : connectedVPNApps).contains(group.route.target) {
+                Text("Этот VPN сейчас отключён. Подключи его в VPN-приложении перед проверкой маршрута.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -318,6 +385,11 @@ struct GroupEditor: View {
                 .frame(width: 72)
             }
             .textFieldStyle(.roundedBorder)
+            if group.route.proxyEndpoint == nil && (!group.route.target.isEmpty || !group.route.port.isEmpty) {
+                Text("Укажи имя сервера или IP-адрес и порт от 1 до 65535.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             if supportsProxyCredentials {
                 HStack(alignment: .top, spacing: 10) {
                     VStack(alignment: .leading, spacing: 4) {
@@ -340,12 +412,26 @@ struct GroupEditor: View {
     }
 
     private var directFields: some View {
-        Picker("Сеть", selection: $group.route.target) {
-            Text("Выбери сеть").tag("")
-            if !group.route.target.isEmpty, !interfaces.contains(where: { $0.id == group.route.target }) {
-                Text("Прежняя сеть недоступна").tag(group.route.target)
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("Сеть", selection: $group.route.target) {
+                Text("Выбери сеть").tag("")
+                if !group.route.target.isEmpty, !interfaces.contains(where: { $0.id == group.route.target }) {
+                    Text("Прежняя сеть недоступна").tag(group.route.target)
+                }
+                ForEach(interfaces) { choice in Text(choice.name).tag(choice.id) }
             }
-            ForEach(interfaces) { choice in Text(choice.name).tag(choice.id) }
+            physicalNetworkHint
+        }
+    }
+
+    @ViewBuilder
+    private var physicalNetworkHint: some View {
+        if !networksLoaded {
+            ProgressView("Ищем сетевые интерфейсы…").controlSize(.small)
+        } else if interfaces.isEmpty {
+            Text("Подключись к Wi‑Fi или Ethernet и выбери сеть.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
         }
     }
 

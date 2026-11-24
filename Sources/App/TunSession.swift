@@ -34,7 +34,7 @@ final class TunSession {
         }
         managesTimeZone = timeZone != nil || FileManager.default.fileExists(atPath: SystemTimeZoneCommand.journal)
         let bundle = Bundle.main
-        guard let engine = bundle.url(forResource: "sing-box", withExtension: nil),
+        guard let engine = bundle.url(forAuxiliaryExecutable: "sing-box"),
               let engineSHA = bundle.object(forInfoDictionaryKey: "SplitWebEngineSHA") as? String else {
             throw TunConfiguration.failure("В сборке отсутствует сетевой движок.")
         }
@@ -62,7 +62,7 @@ final class TunSession {
                          TunConfiguration.ipv4Address, tun.systemIPv4, tun.systemIPv6 ?? "",
                          SystemTimeZoneCommand.script, timeZone ?? ""] + tun.interfaces
             case .proxy(let configuration):
-                guard let helper = bundle.url(forResource: "proxy-overlay", withExtension: nil),
+                guard let helper = bundle.url(forAuxiliaryExecutable: "proxy-overlay"),
                       let helperSHA = bundle.object(forInfoDictionaryKey: "SplitWebProxyOverlaySHA") as? String else {
                     throw TunConfiguration.failure("В сборке отсутствует настройка системного прокси.")
                 }
@@ -134,17 +134,20 @@ final class TunSession {
             proxy.waitUntilExit()
         }
         try? FileManager.default.removeItem(at: directory)
+        let cancelled = AdministratorCommand.wasCancelled(error)
+        let anotherSessionOwnsLock = error.contains("lockf:")
         if managesTimeZone, FileManager.default.fileExists(atPath: SystemTimeZoneCommand.journal),
-           !error.contains("(-128)"), !error.contains("lockf:") {
+           !cancelled, !anotherSessionOwnsLock {
             return "macOS пока не восстановила часовой пояс. SplitWeb повторит восстановление при следующем включении правил."
         }
         if proxy != nil, FileManager.default.fileExists(atPath: "/var/db/local.splitwebonmac.proxy-restore.plist"),
-           !error.contains("(-128)"), !error.contains("lockf:") {
+           !cancelled, !anotherSessionOwnsLock {
             return "macOS пока не восстановила прежние настройки прокси. Резервная копия сохранена."
         }
         guard !wantsStop, process.terminationStatus != 0 else { return nil }
-        if error.contains("(-128)") { return "Запуск отменён." }
-        if error.contains("lock") { return "Другая копия SplitWebOnMac уже управляет маршрутами." }
+        if cancelled { return "Запуск отменён. Нажми «Включить правила», чтобы попробовать снова." }
+        if anotherSessionOwnsLock { return "Другая копия SplitWebOnMac уже управляет маршрутами. Выключи правила в ней и попробуй снова." }
+        if let explanation = AdministratorCommand.denialExplanation(error) { return explanation }
         return error.isEmpty ? "Не удалось включить сетевой движок." : error
     }
 
@@ -159,6 +162,20 @@ final class TunSession {
 
 enum AdministratorCommand {
     static let lock = ["/usr/bin/lockf", "-k", "-t", "0", "/var/run/local.splitwebonmac.lock"]
+
+    static func wasCancelled(_ message: String) -> Bool {
+        message.contains("(-128)") || message.contains("(-60006)")
+    }
+
+    static func denialExplanation(_ message: String) -> String? {
+        if message.contains("(-60005)") {
+            return "macOS не разрешила изменить настройки сети. Попробуй снова и введи имя и пароль администратора этого Mac."
+        }
+        if message.contains("(-60007)") {
+            return "macOS не смогла показать запрос разрешения. Открой панель SplitWebOnMac и попробуй снова."
+        }
+        return nil
+    }
 
     static func prepare(_ process: Process, _ args: [String]) {
         let command = args.map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }.joined(separator: " ")
@@ -197,9 +214,9 @@ enum ProxyPermission {
         var args = AdministratorCommand.lock + ["/bin/bash", "-c", worker, "splitwebonmac",
                                                 installed ? "install" : "remove", String(getuid())]
         if installed {
-            guard let source = Bundle.main.url(forResource: "proxy-overlay", withExtension: nil),
+            guard let source = Bundle.main.url(forAuxiliaryExecutable: "proxy-overlay"),
                   let digest = Bundle.main.object(forInfoDictionaryKey: "SplitWebProxyOverlaySHA") as? String,
-                  let engine = Bundle.main.url(forResource: "sing-box", withExtension: nil),
+                  let engine = Bundle.main.url(forAuxiliaryExecutable: "sing-box"),
                   let engineDigest = Bundle.main.object(forInfoDictionaryKey: "SplitWebEngineSHA") as? String else {
                 throw TunConfiguration.failure("В сборке отсутствует настройка системного прокси.")
             }
@@ -213,7 +230,10 @@ enum ProxyPermission {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {
-            throw TunConfiguration.failure(message.contains("(-128)") ? "Настройка разрешения отменена." : message)
+            if AdministratorCommand.wasCancelled(message) {
+                throw TunConfiguration.failure("Настройка разрешения отменена.")
+            }
+            throw TunConfiguration.failure(AdministratorCommand.denialExplanation(message) ?? message)
         }
     }
 }

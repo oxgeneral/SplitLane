@@ -29,7 +29,7 @@ final class Router: ObservableObject {
     var canRoute: Bool { isInstallable || isLocal }
     var canConfigureSystemTimeZone: Bool { isLocal }
     private var systemTimeZone: String? { UserDefaults.standard.string(forKey: SystemTimeZoneCommand.preference) }
-    private var asksForPassword: Bool { UserDefaults.standard.bool(forKey: "askPasswordForRules") }
+    private var asksForPassword: Bool { UserDefaults.standard.object(forKey: "askPasswordForRules") as? Bool ?? true }
     var startTitle: String {
         isProxyMode && !proxyPermission && !asksForPassword ? "Разрешить и включить" : "Включить правила"
     }
@@ -85,7 +85,7 @@ final class Router: ObservableObject {
         connection = manager?.connection.status ?? .invalid
     }
 
-    func save(_ group: RouteGroup, credentials: ProxyCredentials?) async throws {
+    func save(_ group: RouteGroup, credentials: ProxyCredentials?, apps: [GroupApp]) async throws {
         guard !rulesLocked else { throw TunConfiguration.failure("Сначала выключи сетевые правила.") }
         if let identifier = group.timeZoneIdentifier, TimeZone(identifier: identifier) == nil {
             throw TunConfiguration.failure("Выбери доступный часовой пояс.")
@@ -98,7 +98,7 @@ final class Router: ObservableObject {
         let previousID = routeGroups.groups.first { $0.id == groupID }?.route.proxyCredentialID
         group.route.proxyCredentialID = credentials == nil ? nil : groupID
         var updated = routeGroups
-        updated.save(group)
+        updated.save(group, assigning: apps)
         guard credentials != nil || previousID != nil else {
             try store(updated)
             return
