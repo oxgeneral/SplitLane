@@ -3,7 +3,10 @@ package dialer
 import (
 	"net"
 	"os"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sagernet/sing/common/control"
 	"golang.org/x/sys/unix"
@@ -48,6 +51,78 @@ func TestSplitLaneVPNServiceRebind(t *testing.T) {
 func TestSplitLaneVPNMissingService(t *testing.T) {
 	bind := splitLaneBindInterface(nil, "splitlane-vpn-service:00000000-0000-0000-0000-000000000000")
 	checkVPNServiceBinding(t, bind, 0)
+}
+
+func TestSplitLaneVPNResolverSerializationAndCache(t *testing.T) {
+	var inFlight atomic.Int32
+	var maxInFlight atomic.Int32
+	var calls atomic.Int32
+	var currentIndex atomic.Int32
+	currentIndex.Store(32)
+
+	var clockMu sync.Mutex
+	now := time.Unix(1_700_000_000, 0)
+	readClock := func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		return now
+	}
+	advance := func(d time.Duration) {
+		clockMu.Lock()
+		now = now.Add(d)
+		clockMu.Unlock()
+	}
+
+	resolver := newVPNResolver(func(target string, service bool) int {
+		n := inFlight.Add(1)
+		for {
+			prev := maxInFlight.Load()
+			if n <= prev || maxInFlight.CompareAndSwap(prev, n) {
+				break
+			}
+		}
+		calls.Add(1)
+		time.Sleep(2 * time.Millisecond)
+		inFlight.Add(-1)
+		return int(currentIndex.Load())
+	}, readClock)
+
+	// Burst of parallel lookups across different targets must never overlap inside query.
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		target := "provider-a"
+		if i%2 == 1 {
+			target = "provider-b"
+		}
+		go func(tgt string) {
+			defer wg.Done()
+			if got := resolver.resolve(tgt, false); got != 32 {
+				t.Errorf("expected interface 32, got %d", got)
+			}
+		}(target)
+	}
+	wg.Wait()
+
+	if got := maxInFlight.Load(); got != 1 {
+		t.Fatalf("expected serialized queries (max in-flight 1), got %d", got)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("expected 2 cached queries (one per target), got %d", got)
+	}
+
+	// After TTL expires, resolver re-queries and picks up disconnect immediately.
+	advance(vpnResolveCacheTTL + time.Millisecond)
+	currentIndex.Store(0)
+	if got := resolver.resolve("provider-a", false); got != 0 {
+		t.Fatalf("expected disconnected (0), got %d", got)
+	}
+
+	// Disconnected (0) must never be cached so reconnect succeeds without waiting for TTL.
+	currentIndex.Store(41)
+	if got := resolver.resolve("provider-a", false); got != 41 {
+		t.Fatalf("expected immediate reconnect (41), got %d", got)
+	}
 }
 
 func checkVPNServiceBinding(t *testing.T, bind control.Func, expected int) {

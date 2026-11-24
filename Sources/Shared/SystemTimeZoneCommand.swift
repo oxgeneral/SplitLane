@@ -5,19 +5,25 @@ enum SystemTimeZoneCommand {
     static let journal = "/var/db/local.splitlane.time-zone-restore.json"
 
     static func run(_ arguments: [String]) throws {
-        let process = Process()
-        let errorPipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-l", "JavaScript", "-e", script, "--"] + arguments
-        process.standardError = errorPipe
-        try process.run()
-        let stderr = String(decoding: errorPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            let detail = stderr.isEmpty ? "Не удалось изменить системный часовой пояс." : stderr
-            throw NSError(domain: "SplitLane", code: 1,
-                          userInfo: [NSLocalizedDescriptionKey: detail])
+        try autoreleasepool {
+            let process = Process()
+            let errorPipe = Pipe()
+            defer {
+                try? errorPipe.fileHandleForReading.close()
+                try? errorPipe.fileHandleForWriting.close()
+            }
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            process.arguments = ["-l", "JavaScript", "-e", script, "--"] + arguments
+            process.standardError = errorPipe
+            try process.run()
+            let stderr = String(decoding: errorPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else {
+                let detail = stderr.isEmpty ? "Не удалось изменить системный часовой пояс." : stderr
+                throw NSError(domain: "SplitLane", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: detail])
+            }
         }
     }
 

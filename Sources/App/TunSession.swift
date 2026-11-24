@@ -78,15 +78,18 @@ final class TunSession {
                 child.executableURL = URL(fileURLWithPath: "/bin/bash")
                 child.arguments = ["-c", try Self.worker("run-engine"), "splitlane",
                                    engine.path, configURL.path, lease.path, String(getpid())]
-                child.standardOutput = FileHandle.nullDevice
-                child.standardError = FileHandle.nullDevice
+                let engineLog = SplitLaneLog.openAppendHandle(for: .proxyEngine)
+                child.standardOutput = engineLog ?? FileHandle.nullDevice
+                child.standardError = engineLog ?? FileHandle.nullDevice
+                defer { try? engineLog?.close() }
                 try child.run()
                 proxy = child
                 var overlayArgs = [token, lease.path, String(ProxyRoutingConfiguration.port),
                                    String(child.processIdentifier), String(getpid())]
                 if protected { overlayArgs += ["protect", String(getuid())] }
                 if let timeZone { overlayArgs += ["zone", timeZone] }
-                if ProxyPermission.matchesCurrentBuild {
+                let usedSudo = ProxyPermission.matchesCurrentBuild
+                if usedSudo {
                     args = ["-n", "--", ProxyPermission.helper, "--authorized"] + overlayArgs
                     launch = { process, args in
                         process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
@@ -97,12 +100,14 @@ final class TunSession {
                     if protected { args += [engine.path, engineSHA] }
                     args += overlayArgs
                 }
+                SplitLaneLog.info("session", "Launching proxy overlay session=splitlane-\(token) auth=\(usedSudo ? "sudo" : "osascript") protected=\(protected) packetRules=\(configuration.packetRules.count) proxyPID=\(child.processIdentifier) timeZone=\(timeZone ?? "none")")
             }
             launch(process, args)
             process.standardOutput = FileHandle.nullDevice
             process.standardError = output
             try process.run()
         } catch {
+            SplitLaneLog.error("session", "Session init failed: \(error.localizedDescription)")
             if let proxy, proxy.isRunning {
                 proxy.terminate()
                 proxy.waitUntilExit()
@@ -119,11 +124,16 @@ final class TunSession {
     }
 
     func stop() {
+        SplitLaneLog.info("session", "Stop requested; removing lease file")
         wantsStop = true
         try? FileManager.default.removeItem(at: lease)
     }
 
     func finish() -> String? {
+        defer {
+            try? output.fileHandleForReading.close()
+            try? output.fileHandleForWriting.close()
+        }
         let error = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if let proxy, proxy.isRunning {
@@ -133,7 +143,9 @@ final class TunSession {
         try? FileManager.default.removeItem(at: directory)
         let cancelled = AdministratorCommand.wasCancelled(error)
         let anotherSessionOwnsLock = error.contains("lockf:")
-        let rootCause = (!cancelled && !anotherSessionOwnsLock && !error.isEmpty) ? error : nil
+        let cleaned = AdministratorCommand.cleanMessage(error)
+        SplitLaneLog.info("session", "Session finished exitStatus=\(process.terminationStatus) wantsStop=\(wantsStop) cancelled=\(cancelled) recoveryPending=\(ProxyOverlaySettings.recoveryPending) detail=\(cleaned.isEmpty ? "none" : cleaned)")
+        let rootCause = (!cancelled && !anotherSessionOwnsLock && !cleaned.isEmpty) ? cleaned : nil
         if managesTimeZone, FileManager.default.fileExists(atPath: SystemTimeZoneCommand.journal),
            !cancelled, !anotherSessionOwnsLock {
             if let rootCause, rootCause.contains("Восстановить сеть") { return rootCause }
@@ -153,7 +165,7 @@ final class TunSession {
         if cancelled { return "Запуск отменён. Нажми «Включить правила», чтобы попробовать снова." }
         if anotherSessionOwnsLock { return "Другая копия SplitLane уже управляет маршрутами. Выключи правила в ней и попробуй снова." }
         if let explanation = AdministratorCommand.denialExplanation(error) { return explanation }
-        return error.isEmpty ? "Не удалось включить сетевой движок." : error
+        return cleaned.isEmpty ? "Не удалось включить сетевой движок." : cleaned
     }
 
     nonisolated static func recoverNetwork() throws {
@@ -204,19 +216,36 @@ enum AdministratorCommand {
         ]
     }
 
+    static func cleanMessage(_ message: String) -> String {
+        var text = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let range = text.range(of: #"^\d+:\d+: execution error: "#, options: .regularExpression) {
+            text.removeSubrange(range)
+            if let suffix = text.range(of: #" \(-?\d+\)$"#, options: .regularExpression) {
+                text.removeSubrange(suffix)
+            }
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     static func run(_ args: [String], cancelled: String) throws {
-        let process = Process()
-        let output = Pipe()
-        prepare(process, args)
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = output
-        try process.run()
-        let message = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else {
-            if wasCancelled(message) { throw TunConfiguration.failure(cancelled) }
-            throw TunConfiguration.failure(denialExplanation(message) ?? message)
+        try autoreleasepool {
+            let process = Process()
+            let output = Pipe()
+            defer {
+                try? output.fileHandleForReading.close()
+                try? output.fileHandleForWriting.close()
+            }
+            prepare(process, args)
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = output
+            try process.run()
+            let message = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else {
+                if wasCancelled(message) { throw TunConfiguration.failure(cancelled) }
+                throw TunConfiguration.failure(denialExplanation(message) ?? cleanMessage(message))
+            }
         }
     }
 }

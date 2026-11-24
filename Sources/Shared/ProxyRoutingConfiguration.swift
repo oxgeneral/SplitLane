@@ -98,7 +98,7 @@ struct ProxyRoutingConfiguration: Sendable {
             rules.append(["inbound": PacketRoutingConfiguration.relayTag, "action": "reject"])
         }
         let config: [String: Any] = [
-            "log": ["level": "warn"],
+            "log": ["level": "warn", "timestamp": true],
             "inbounds": inbounds,
             "outbounds": outbounds,
             "endpoints": endpoints,

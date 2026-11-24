@@ -98,7 +98,7 @@ mkdir -m 700 "$private"
 printf '%s  %s\n%s  %s\n' "$engine_sha" "$private/sing-box" "$config_sha" "$private/config.json" |
     /usr/bin/shasum -a 256 -c >/dev/null
 "$private/sing-box" check -c "$private/config.json"
-"$private/sing-box" run -c "$private/config.json" >> "$private/engine.log" 2>&1 &
+"$private/sing-box" run --disable-color -c "$private/config.json" >> "$private/engine.log" 2>&1 &
 pid=$!
 
 tun=

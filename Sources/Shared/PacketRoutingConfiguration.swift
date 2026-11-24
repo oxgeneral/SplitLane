@@ -7,6 +7,17 @@ struct PacketRoutingRule: Codable, Equatable, Sendable {
     let relayID: UUID?
 }
 
+struct PacketBypassEndpoint: Hashable, Comparable, Sendable {
+    let family: String   // "inet" or "inet6"
+    let proto: String    // "tcp" or "udp"
+    let address: String
+    let port: UInt16?    // nil matches any port (e.g. SC VPN ServerAddress)
+
+    static func < (lhs: Self, rhs: Self) -> Bool {
+        (lhs.family, lhs.proto, lhs.address, lhs.port ?? 0) < (rhs.family, rhs.proto, rhs.address, rhs.port ?? 0)
+    }
+}
+
 enum PacketRoutingConfiguration {
     static let manifest = "packet-rules.json"
     static let relayPort: UInt16 = 39879
@@ -86,7 +97,7 @@ enum PacketRoutingConfiguration {
 
         rules.append(["action": "route", "outbound": "original-scope"])
         return try JSONSerialization.data(withJSONObject: [
-            "log": ["level": "warn"],
+            "log": ["level": "warn", "timestamp": true],
             "inbounds": [["type": "tun", "tag": "packet-capture", "address": ["\(ipv4)/30", "\(ipv6)/126"],
                           "mtu": 1400, "stack": "gvisor", "auto_route": false, "dns_mode": "disabled"]],
             "outbounds": outbounds,
@@ -94,16 +105,24 @@ enum PacketRoutingConfiguration {
         ], options: [.sortedKeys])
     }
 
-    static func filter(owner: UInt32, interface: String?, capturesTCP: Bool) -> String {
+    static func filter(
+        owner: UInt32,
+        interface: String?,
+        capturesTCP: Bool,
+        tcpCaptureInterfacesV4: [String] = ["! lo0"],
+        tcpCaptureInterfacesV6: [String] = ["! lo0"],
+        bypassEndpoints: [PacketBypassEndpoint] = []
+    ) -> String {
         var rules = """
             table <splitlane_webrtc_exempt4> const { 127.0.0.0/8, 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255/32 }
             table <splitlane_webrtc_exempt6> const { ::1/128, fe80::/10, ff00::/8 }
             table <splitlane_local_addresses> const { self }
 
             """
-        for (family, peer, loopback, exempt) in [
-            ("inet", "172.31.252.2", "127.0.0.1", "splitlane_webrtc_exempt4"),
-            ("inet6", "fd9e:7345:2b1c:252::2", "::1", "splitlane_webrtc_exempt6")
+        let sortedBypass = Array(Set(bypassEndpoints)).sorted()
+        for (family, peer, loopback, exempt, tcpTargets) in [
+            ("inet", "172.31.252.2", "127.0.0.1", "splitlane_webrtc_exempt4", tcpCaptureInterfacesV4),
+            ("inet6", "fd9e:7345:2b1c:252::2", "::1", "splitlane_webrtc_exempt6", tcpCaptureInterfacesV6)
         ] {
             guard let interface else {
                 if capturesTCP {
@@ -113,13 +132,23 @@ enum PacketRoutingConfiguration {
                 continue
             }
             let redirect = "route-to (\(interface) \(peer)) \(family)"
+            let captureAllTCP = tcpTargets == ["! lo0"]
+            for endpoint in sortedBypass where endpoint.family == family {
+                if endpoint.proto == "tcp" && (!capturesTCP || !captureAllTCP) { continue }
+                let portClause = endpoint.port.map { " port \($0)" } ?? ""
+                rules += "pass out quick on ! lo0 \(family) proto \(endpoint.proto) from any to \(endpoint.address)\(portClause) user = \(owner) no state\n"
+            }
             if capturesTCP {
                 // PF re-evaluates route-to packets on the capture TUN interface.
                 rules += "pass out quick on \(interface) \(family) proto tcp no state\n"
                 // Loopback delivery satisfies macOS's receive-interface check across VPN and physical interfaces.
                 rules += "pass in quick on \(interface) route-to (lo0 \(loopback)) \(family) proto tcp from any to <splitlane_local_addresses> no state\n"
-                // Capture new TCP connections across all non-loopback interfaces (including half-route VPNs and scoped sockets).
-                rules += "pass out quick on ! lo0 \(redirect) proto tcp from any to ! <\(exempt)> user = \(owner) flags S/SA keep state (if-bound)\n"
+                // Capture new TCP connections. When a VPN tunnel is the default route for this family,
+                // capture on active tunnel interfaces only so VPN tunnel providers (NEPacketTunnelProvider)
+                // can reach their upstream servers on the underlying physical interface without NECP lo0 drops.
+                for target in tcpTargets {
+                    rules += "pass out quick on \(target) \(redirect) proto tcp from any to ! <\(exempt)> user = \(owner) flags S/SA keep state (if-bound)\n"
+                }
             }
             // PF evaluates route-to packets again on the TUN interface.
             rules += "pass out quick on \(interface) \(family) proto udp tagged splitlane_udp no state\n"
@@ -127,5 +156,26 @@ enum PacketRoutingConfiguration {
             rules += "pass out quick on ! lo0 \(redirect) proto udp from any to ! <\(exempt)> user = \(owner) tag splitlane_udp no state\n"
         }
         return rules
+    }
+
+    static func tcpCaptureInterfaces(family: String, excluding captureInterface: String,
+                                     liveAddresses: [String], defaultRouteInterface: String?) -> [String] {
+        let tunnelPrefixes = ["utun", "ppp", "ipsec", "tun"]
+        func isTunnel(_ name: String) -> Bool {
+            name != captureInterface && tunnelPrefixes.contains { name.hasPrefix($0) }
+        }
+        guard let defaultRouteInterface, isTunnel(defaultRouteInterface) else {
+            return ["! lo0"]
+        }
+        var tunnels = Set<String>([defaultRouteInterface])
+        for entry in liveAddresses {
+            let parts = entry.split(separator: " ")
+            guard parts.count == 3, parts[1] == family else { continue }
+            let name = String(parts[0])
+            let addr = String(parts[2])
+            guard isTunnel(name), !addr.hasPrefix("fe80:") else { continue }
+            tunnels.insert(name)
+        }
+        return tunnels.sorted()
     }
 }

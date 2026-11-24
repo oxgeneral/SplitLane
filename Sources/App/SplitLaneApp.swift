@@ -40,6 +40,10 @@ private final class SplitLaneDelegate: NSObject, NSApplicationDelegate {
     private var mainWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let bundle = Bundle.main
+        let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        SplitLaneLog.notice("app", "Launched \(bundle.bundleIdentifier ?? "SplitLane") \(version) (\(build)) pid=\(getpid())")
         statusItem.button?.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: "SplitLane")
         statusItem.button?.toolTip = "SplitLane"
         statusItem.button?.target = self
@@ -61,6 +65,7 @@ private final class SplitLaneDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        SplitLaneLog.notice("app", "Terminating pid=\(getpid())")
         router.stopLocal()
     }
 
@@ -571,6 +576,28 @@ struct RoutesView: View {
                         .disabled(router.rulesLocked)
                         Divider()
                     }
+                    Menu("Логи") {
+                        Button("Открыть логи") {
+                            if let url = SplitLaneLog.exportDiagnosticReport() {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                        Button("Скопировать последние логи") {
+                            let report = SplitLaneLog.diagnosticReport(maxLinesPerStream: 200)
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(report, forType: .string)
+                        }
+                        Button("Показать папку логов в Finder") {
+                            _ = SplitLaneLog.exportDiagnosticReport()
+                            NSWorkspace.shared.open(SplitLaneLog.userDirectory)
+                        }
+                        Divider()
+                        Button("Очистить логи приложения") {
+                            SplitLaneLog.clearUserLogs()
+                            SplitLaneLog.info("app", "Cleared user log files")
+                        }
+                    }
+                    Divider()
                     Button("Выйти из SplitLane") { NSApp.terminate(nil) }
                 } label: {
                     Image(systemName: "gearshape")

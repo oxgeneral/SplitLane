@@ -10,8 +10,10 @@ struct ProxyOverlay {
     static func main() {
         do { try run() }
         catch {
-            log.error("Proxy session failed: \(error.localizedDescription, privacy: .private)")
-            FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8))
+            let message = error.localizedDescription
+            log.error("Proxy session failed: \(message, privacy: .private)")
+            SplitLaneLog.error("helper", "Session failed pid=\(getpid()) fds=\(SplitLaneLog.openFDCount()): \(message)")
+            FileHandle.standardError.write(Data((message + "\n").utf8))
             exit(1)
         }
     }
@@ -20,25 +22,33 @@ struct ProxyOverlay {
         guard geteuid() == 0 else { throw failure("Для изменения сетевых настроек нужен администратор Mac.") }
         let arguments = Array(CommandLine.arguments.dropFirst())
         if arguments == ["--recover"] {
+            SplitLaneLog.notice("recover", "Starting network recovery pid=\(getpid()) fds=\(SplitLaneLog.openFDCount())")
             let lock = try acquireLock()
             defer { close(lock) }
             var firstError: Error?
-            for step in [
-                { try PacketCapture.recover() },
-                { try restore() },
-                { try cleanLegacyVPNProxies() },
-                { try restoreTimeZone() }
-            ] {
-                do { try step() }
-                catch {
-                    log.error("Recovery step failed: \(error.localizedDescription, privacy: .private)")
+            let steps: [(String, () throws -> Void)] = [
+                ("PacketCapture.recover", { try PacketCapture.recover() }),
+                ("ProxyOverlay.restore", { try restore() }),
+                ("ProxyOverlay.cleanLegacyVPNProxies", { try cleanLegacyVPNProxies() }),
+                ("ProxyOverlay.restoreTimeZone", { try restoreTimeZone() })
+            ]
+            for (name, step) in steps {
+                do {
+                    try step()
+                    SplitLaneLog.info("recover", "Step ok: \(name)")
+                } catch {
+                    let message = error.localizedDescription
+                    log.error("Recovery step failed: \(message, privacy: .private)")
+                    SplitLaneLog.error("recover", "Step failed \(name): \(message)")
                     if firstError == nil { firstError = error }
                 }
             }
             if let firstError { throw firstError }
+            SplitLaneLog.notice("recover", "Network recovery completed")
             return
         }
         let request = try ProxyOverlayRequest(arguments: arguments)
+        let startedAt = ContinuousClock.now
         var owner: uid_t?
         var lock: Int32 = -1
         defer { if lock >= 0 { close(lock) } }
@@ -56,6 +66,16 @@ struct ProxyOverlay {
             owner = uid
         }
         let lease = request.lease
+        if let readerUID = owner {
+            SplitLaneLog.setPrivilegedReaderUID(readerUID)
+        } else {
+            var leaseInfo = stat()
+            if lstat(lease.path, &leaseInfo) == 0,
+               (leaseInfo.st_mode & S_IFMT) == S_IFREG, leaseInfo.st_uid > 0 {
+                SplitLaneLog.setPrivilegedReaderUID(leaseInfo.st_uid)
+            }
+        }
+        SplitLaneLog.info("helper", "Starting session=\(request.sessionName) pid=\(getpid()) authorized=\(request.authorized) port=\(request.port) proxyPID=\(request.proxyPID) appPID=\(request.appPID) protectOwner=\(request.packetCaptureOwner.map(String.init) ?? "none") timeZone=\(request.timeZone ?? "none") fds=\(SplitLaneLog.openFDCount())")
         let port = request.port
         let state = URL(fileURLWithPath: "/private/tmp/\(request.sessionName)")
         let ready = state.appendingPathComponent("ready")
@@ -87,6 +107,7 @@ struct ProxyOverlay {
             }
             guard kill(request.proxyPID, 0) == 0 else {
                 log.error("The local proxy exited while routing was active.")
+                SplitLaneLog.error("helper", "Local proxy pid=\(request.proxyPID) exited while routing was active")
                 throw failure("Локальный прокси остановился.")
             }
             return true
@@ -98,6 +119,7 @@ struct ProxyOverlay {
             Thread.sleep(forTimeInterval: 0.1)
         }
         guard listenerReady(port) else { throw failure("Локальный прокси не открыл порт.") }
+        SplitLaneLog.info("helper", "Local proxy listener ready on 127.0.0.1:\(port)")
         try FileManager.default.createDirectory(at: state, withIntermediateDirectories: false,
                                                 attributes: [.posixPermissions: 0o755])
         var vpnOverlay = VPNProxyOverlay()
@@ -107,26 +129,38 @@ struct ProxyOverlay {
         defer {
             let keepFilter = protection != nil && wasReady && !requestedStop
             var restoreProxy = !keepFilter || (protection?.capturesTCP == true)
+            SplitLaneLog.info("helper", "Cleaning up requestedStop=\(requestedStop) wasReady=\(wasReady) keepFilter=\(keepFilter) restoreProxy=\(restoreProxy) fds=\(SplitLaneLog.openFDCount())")
             if keepFilter, let protection {
                 do { try protection.hold() }
                 catch {
                     restoreProxy = false
                     log.error("Could not activate emergency packet blocking. The recovery journal was retained.")
+                    SplitLaneLog.error("helper", "Emergency packet blocking failed: \(error.localizedDescription)")
                 }
             }
             try? FileManager.default.removeItem(at: ready)
             do { try vpnOverlay.stop() }
-            catch { log.error("Could not restore the temporary VPN settings.") }
+            catch {
+                log.error("Could not restore the temporary VPN settings.")
+                SplitLaneLog.error("helper", "Could not restore temporary VPN settings: \(error.localizedDescription)")
+            }
             if restoreProxy {
                 do { try restore() }
-                catch { log.error("Could not restore the system proxy. The recovery journal was retained.") }
+                catch {
+                    log.error("Could not restore the system proxy. The recovery journal was retained.")
+                    SplitLaneLog.error("helper", "Could not restore system proxy: \(error.localizedDescription)")
+                }
             }
             protection?.stop(keepingFilter: keepFilter)
             try? FileManager.default.removeItem(at: state)
             if timeZoneStarted {
                 do { try restoreTimeZone() }
-                catch { log.error("Could not restore the system time zone. The recovery journal was retained.") }
+                catch {
+                    log.error("Could not restore the system time zone. The recovery journal was retained.")
+                    SplitLaneLog.error("helper", "Could not restore system time zone: \(error.localizedDescription)")
+                }
             }
+            SplitLaneLog.info("helper", "Session cleanup finished pid=\(getpid()) fds=\(SplitLaneLog.openFDCount())")
         }
         if let owner = request.packetCaptureOwner {
             protection = try PacketCapture(lease: lease, state: state, owner: owner,
@@ -134,58 +168,78 @@ struct ProxyOverlay {
         }
 
         var activeServices: [String] = []
+        var nextHeartbeat = ContinuousClock.now + .seconds(60)
         while try active() {
-            try protection?.check()
-            let next = primaryServices(store)
-            if next != activeServices {
-                try vpnOverlay.stop()
-                try restore()
-                try? FileManager.default.removeItem(at: ready)
-                activeServices = next
-                if !next.isEmpty {
-                    var regularServices: [String] = []
-                    var vpnServices: [String] = []
-                    for id in next {
-                        guard let isVPN = isVPNService(id, store: store) else {
-                            throw failure("Не удалось определить тип активного подключения.")
+            let shouldContinue = try autoreleasepool { () -> Bool in
+                try protection?.check()
+                let next = primaryServices(store)
+                if next != activeServices {
+                    SplitLaneLog.info("helper", "Primary services changed old=[\(activeServices.joined(separator: ","))] new=[\(next.joined(separator: ","))]")
+                    try vpnOverlay.stop()
+                    try restore()
+                    try? FileManager.default.removeItem(at: ready)
+                    activeServices = next
+                    if !next.isEmpty {
+                        var regularServices: [String] = []
+                        var vpnServices: [String] = []
+                        for id in next {
+                            guard let isVPN = isVPNService(id, store: store) else {
+                                throw failure("Не удалось определить тип активного подключения.")
+                            }
+                            if isVPN {
+                                vpnServices.append(id)
+                            } else {
+                                regularServices.append(id)
+                            }
                         }
-                        if isVPN {
-                            vpnServices.append(id)
-                        } else {
-                            regularServices.append(id)
+                        if !regularServices.isEmpty { try apply(to: regularServices, port: port, store: store) }
+                        for id in vpnServices { try vpnOverlay.install(service: id, port: port) }
+                        for _ in 0..<25 {
+                            guard try active() else { return false }
+                            if effective(port) { break }
+                            Thread.sleep(forTimeInterval: 0.1)
                         }
+                        guard effective(port) else { throw failure("macOS не применила прокси для текущего подключения.") }
+                        if let timeZone = request.timeZone, !timeZoneStarted {
+                            timeZoneStarted = true
+                            try SystemTimeZoneCommand.run(["begin", timeZone])
+                            SplitLaneLog.info("helper", "Applied system timeZone=\(timeZone)")
+                        }
+                        if !wasReady { try protection?.armFallback() }
+                        wasReady = true
+                        try Data().write(to: ready)
+                        SplitLaneLog.notice("helper", "Routing ready regular=[\(regularServices.joined(separator: ","))] vpn=[\(vpnServices.joined(separator: ","))] fds=\(SplitLaneLog.openFDCount()) \(protection?.diagnosticSummary ?? "capture=off")")
                     }
-                    if !regularServices.isEmpty { try apply(to: regularServices, port: port, store: store) }
-                    for id in vpnServices { try vpnOverlay.install(service: id, port: port) }
-                    for _ in 0..<25 {
-                        guard try active() else { return }
-                        if effective(port) { break }
-                        Thread.sleep(forTimeInterval: 0.1)
+                } else if !activeServices.isEmpty, !effective(port) {
+                    // Give configd time to publish a new primary service before checking again.
+                    Thread.sleep(forTimeInterval: 0.5)
+                    if !effective(port), activeServices == primaryServices(store) {
+                        let current = SCDynamicStoreCopyProxies(nil) as? [String: Any] ?? [:]
+                        if ProxyOverlaySettings.hasProxy(current) {
+                            log.error("The active system proxy no longer points to SplitLane.")
+                            SplitLaneLog.error("helper", "Active system proxy was replaced externally")
+                            throw failure("Системный прокси был изменён извне.")
+                        }
+                        log.notice("Re-applying SplitLane proxy after network service reset.")
+                        SplitLaneLog.notice("helper", "Re-applying SplitLane proxy after network service reset")
+                        activeServices = []
                     }
-                    guard effective(port) else { throw failure("macOS не применила прокси для текущего подключения.") }
-                    if let timeZone = request.timeZone, !timeZoneStarted {
-                        timeZoneStarted = true
-                        try SystemTimeZoneCommand.run(["begin", timeZone])
-                    }
-                    if !wasReady { try protection?.armFallback() }
-                    wasReady = true
-                    try Data().write(to: ready)
                 }
-            } else if !activeServices.isEmpty, !effective(port) {
-                // Give configd time to publish a new primary service before checking again.
-                Thread.sleep(forTimeInterval: 0.5)
-                if !effective(port), activeServices == primaryServices(store) {
-                    let current = SCDynamicStoreCopyProxies(nil) as? [String: Any] ?? [:]
-                    if ProxyOverlaySettings.hasProxy(current) {
-                        log.error("The active system proxy no longer points to SplitLane.")
-                        throw failure("Системный прокси был изменён извне.")
+                let now = ContinuousClock.now
+                if now >= nextHeartbeat {
+                    if protection != nil {
+                        SplitLaneLog.truncateIfOversized(for: .captureEngine)
                     }
-                    log.notice("Re-applying SplitLane proxy after network service reset.")
-                    activeServices = []
+                    let uptime = Int((now - startedAt).components.seconds)
+                    SplitLaneLog.info("helper", "Heartbeat uptime=\(uptime)s fds=\(SplitLaneLog.openFDCount()) services=[\(activeServices.joined(separator: ","))] \(protection?.diagnosticSummary ?? "capture=off")")
+                    nextHeartbeat = now + .seconds(60)
                 }
+                return true
             }
+            guard shouldContinue else { return }
             Thread.sleep(forTimeInterval: 0.2)
         }
+        SplitLaneLog.notice("helper", "Stop requested cleanly; restoring system settings")
         try vpnOverlay.stop()
         try restore()
     }

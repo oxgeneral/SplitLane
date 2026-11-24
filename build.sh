@@ -127,7 +127,7 @@ if [[ "$mode" == tun || "$mode" == local || "$mode" == standalone || "$mode" == 
     if [[ "$mode" != tun ]]; then
         helper="$app/Contents/MacOS/proxy-overlay"
         "${compiler[@]}" -parse-as-library Sources/Tools/{ProxyOverlay,PacketCapture,VPNProxyOverlay}.swift \
-            Sources/Shared/{SystemTimeZoneCommand,PacketRoutingConfiguration,ProxyOverlaySettings,ProxyOverlayRequest}.swift -o "$helper"
+            Sources/Shared/{SystemTimeZoneCommand,PacketRoutingConfiguration,ProxyOverlaySettings,ProxyOverlayRequest,SplitLaneLog}.swift -o "$helper"
         codesign --force --identifier "$app_id.proxy-overlay" "${sign_options[@]}" "$helper"
         cp Sources/Engine/run-proxy.sh Sources/Engine/run-engine.sh Sources/Engine/proxy-permission.sh "$app/Contents/Resources/"
         helper_sha="$(shasum -a 256 "$helper" | awk '{print $1}')"

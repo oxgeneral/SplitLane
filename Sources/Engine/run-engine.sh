@@ -3,7 +3,7 @@ engine=$1
 config=$2
 lease=$3
 app_pid=$4
-"$engine" run -c "$config" &
+"$engine" run --disable-color -c "$config" &
 pid=$!
 sleep_pid=
 grace_pid=

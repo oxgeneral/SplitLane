@@ -76,12 +76,69 @@ import "C"
 import (
 	"errors"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/sagernet/sing/common/control"
 	"golang.org/x/sys/unix"
 )
+
+type vpnResolveKey struct {
+	target  string
+	service bool
+}
+
+type vpnResolveEntry struct {
+	index     int
+	expiresAt time.Time
+}
+
+const vpnResolveCacheTTL = 250 * time.Millisecond
+
+type vpnResolver struct {
+	mu    sync.Mutex
+	cache map[vpnResolveKey]vpnResolveEntry
+	now   func() time.Time
+	query func(string, bool) int
+}
+
+var defaultVPNResolver = newVPNResolver(querySplitLaneVPNInterface, time.Now)
+
+func newVPNResolver(query func(string, bool) int, now func() time.Time) *vpnResolver {
+	return &vpnResolver{
+		cache: make(map[vpnResolveKey]vpnResolveEntry),
+		now:   now,
+		query: query,
+	}
+}
+
+func (r *vpnResolver) resolve(target string, service bool) int {
+	if strings.IndexByte(target, 0) >= 0 {
+		return 0
+	}
+	// SystemConfiguration APIs (SCPreferences / SCNetworkConnection) are not thread-safe;
+	// serialize all lookups and briefly coalesce bursts of parallel dials.
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	key := vpnResolveKey{target: target, service: service}
+	ts := r.now()
+	if entry, ok := r.cache[key]; ok && ts.Before(entry.expiresAt) {
+		return entry.index
+	}
+	index := r.query(target, service)
+	if index > 0 {
+		r.cache[key] = vpnResolveEntry{
+			index:     index,
+			expiresAt: ts.Add(vpnResolveCacheTTL),
+		}
+	} else {
+		delete(r.cache, key)
+	}
+	return index
+}
 
 func splitLaneBindInterface(finder control.InterfaceFinder, name string) control.Func {
 	if serviceID, ok := strings.CutPrefix(name, "splitlane-vpn-service:"); ok {
@@ -94,9 +151,10 @@ func splitLaneBindInterface(finder control.InterfaceFinder, name string) control
 }
 
 func resolveSplitLaneVPN(target string, service bool) int {
-	if strings.IndexByte(target, 0) >= 0 {
-		return 0
-	}
+	return defaultVPNResolver.resolve(target, service)
+}
+
+func querySplitLaneVPNInterface(target string, service bool) int {
 	name := C.CString(target)
 	defer C.free(unsafe.Pointer(name))
 	return int(C.splitLaneVPNInterface(name, C.bool(service)))

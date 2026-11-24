@@ -60,7 +60,7 @@ struct TunConfiguration: Sendable {
                                         "::1/128", "fe80::/10", "ff00::/8"]
         let exclusions = Set(reserved + transports.flatMap(\.excludedRoutes)).sorted()
         let config: [String: Any] = [
-            "log": ["level": probe ? "info" : "warn"],
+            "log": ["level": probe ? "info" : "warn", "timestamp": true],
             "inbounds": [["type": "tun", "tag": "splitlane-tun", "address": addresses, "mtu": 1400,
                           "auto_route": true, "route_address": routes, "route_exclude_address": exclusions,
                           "dns_mode": "disabled", "stack": "gvisor"]],

@@ -70,8 +70,12 @@ final class Router: ObservableObject {
 
     init() {
         do { routeGroups = try RouteGroups.load(from: .standard) }
-        catch { self.error = "Не удалось открыть сохранённые сетевые группы." }
+        catch {
+            self.error = "Не удалось открыть сохранённые сетевые группы."
+            SplitLaneLog.error("router", "Failed to load saved route groups: \(error.localizedDescription)")
+        }
         recoveryPending = isProxyMode && ProxyOverlaySettings.recoveryPending
+        SplitLaneLog.info("router", "Initialized mode=\(isProxyMode ? "proxy" : (isLocal ? "tun" : (isInstallable ? "extension" : "preview"))) groups=\(routeGroups.groups.count) apps=\(routeGroups.rules.count) passwordless=\(proxyPermission) recoveryPending=\(recoveryPending)")
     }
 
     func refresh() async {
@@ -158,6 +162,7 @@ final class Router: ObservableObject {
 
     func recoverLocalNetwork() {
         guard isProxyMode, recoveryPending, !busy, !wantsRouting else { return }
+        SplitLaneLog.notice("router", "User triggered network recovery")
         busy = true
         error = nil
         Task {
@@ -165,8 +170,13 @@ final class Router: ObservableObject {
                 recoveryPending = ProxyOverlaySettings.recoveryPending
                 busy = false
             }
-            do { try await Task.detached(priority: .userInitiated) { try TunSession.recoverNetwork() }.value }
-            catch { self.error = error.localizedDescription }
+            do {
+                try await Task.detached(priority: .userInitiated) { try TunSession.recoverNetwork() }.value
+                SplitLaneLog.notice("router", "Network recovery succeeded recoveryPending=\(ProxyOverlaySettings.recoveryPending)")
+            } catch {
+                self.error = error.localizedDescription
+                SplitLaneLog.error("router", "Network recovery failed: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -186,6 +196,7 @@ final class Router: ObservableObject {
 
     func setProxyPermission(_ allowed: Bool) {
         guard isProxyMode, !rulesLocked else { return }
+        SplitLaneLog.notice("router", "Updating passwordless helper permission allowed=\(allowed)")
         busy = true
         error = nil
         preparingPermission = true
@@ -198,8 +209,10 @@ final class Router: ObservableObject {
             do {
                 try await Task.detached(priority: .userInitiated) { try ProxyPermission.setInstalled(allowed) }.value
                 UserDefaults.standard.set(!allowed, forKey: "askPasswordForRules")
+                SplitLaneLog.notice("router", "Passwordless helper permission updated installed=\(ProxyPermission.isInstalled)")
             } catch {
                 self.error = error.localizedDescription
+                SplitLaneLog.error("router", "Passwordless helper permission update failed: \(error.localizedDescription)")
             }
         }
     }
@@ -211,6 +224,9 @@ final class Router: ObservableObject {
         let useProxy = isProxyMode
         let systemTimeZone = self.systemTimeZone
         let asksForPassword = self.asksForPassword
+        let kindsSummary = Dictionary(grouping: routeGroups.groups, by: { $0.route.kind.rawValue })
+            .map { "\($0.key):\($0.value.count)" }.sorted().joined(separator: ",")
+        SplitLaneLog.notice("router", "Starting routing mode=\(useProxy ? "proxy" : "tun") groups=\(routeGroups.groups.count) rules=\(savedRules.count) kinds=[\(kindsSummary)] timeZone=\(systemTimeZone ?? "none")")
         Task {
             let process = ProcessInfo.processInfo
             // Keep status updates timely while the menu bar panel is closed.
@@ -224,6 +240,7 @@ final class Router: ObservableObject {
                 proxyPermission = ProxyPermission.isInstalled
                 recoveryPending = useProxy && ProxyOverlaySettings.recoveryPending
                 busy = false
+                SplitLaneLog.info("router", "Routing lifecycle ended recoveryPending=\(recoveryPending) error=\(self.error ?? "none")")
             }
             do {
                 let configuration = try await Task.detached(priority: .userInitiated) { () -> LocalRoutingConfiguration in
@@ -232,6 +249,7 @@ final class Router: ObservableObject {
                 }.value
                 if case .proxy = configuration,
                    ProxyPermission.isInstalled || !asksForPassword, !ProxyPermission.matchesCurrentBuild {
+                    SplitLaneLog.info("router", "Refreshing installed passwordless helper for current build")
                     preparingPermission = true
                     try await Task.detached(priority: .userInitiated) { try ProxyPermission.setInstalled(true) }.value
                     proxyPermission = ProxyPermission.isInstalled
@@ -240,24 +258,37 @@ final class Router: ObservableObject {
                 guard !terminating else { return }
                 let session = try TunSession(configuration: configuration, timeZone: systemTimeZone)
                 tun = session
+                var nextLogCheck = ContinuousClock.now + .seconds(60)
                 while session.isRunning {
                     do {
                         try session.renewLease()
                     } catch {
                         busy = true
                         self.error = error.localizedDescription
+                        SplitLaneLog.error("router", "Failed to renew session lease: \(error.localizedDescription)")
                         session.stop()
                     }
                     if !session.stopping {
                         let ready = session.isReady
-                        if enabled != ready { enabled = ready }
+                        if enabled != ready {
+                            enabled = ready
+                            SplitLaneLog.notice("router", ready ? "Routing rules active" : "Waiting for active connection")
+                        }
                         if ready && busy { busy = false }
+                    }
+                    if useProxy && ContinuousClock.now >= nextLogCheck {
+                        SplitLaneLog.truncateIfOversized(for: .proxyEngine)
+                        nextLogCheck = ContinuousClock.now + .seconds(60)
                     }
                     try? await Task.sleep(for: .seconds(1))
                 }
-                if let failure = session.finish() { error = failure }
+                if let failure = session.finish() {
+                    error = failure
+                    SplitLaneLog.error("router", "Routing session ended with error: \(failure)")
+                }
             } catch {
                 self.error = error.localizedDescription
+                SplitLaneLog.error("router", "Routing start failed: \(error.localizedDescription)")
             }
         }
     }

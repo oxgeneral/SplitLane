@@ -275,7 +275,38 @@ struct Check {
             precondition(blocks.contains { $0.contains("inet proto udp") } && blocks.contains { $0.contains("inet6 proto udp") })
             precondition(!fallback.contains("pass ") && !fallback.contains("route-to "))
         }
-        for filter in [blockFilter, groupFilter, udpFallback, groupFallback] {
+        // VPN-scoped TCP capture keeps physical en0 free for NEPacketTunnelProvider (e.g. Happ) while preserving UDP WebRTC capture everywhere.
+        let snapshot = ["en0 inet 192.168.0.104", "utun9 inet 172.31.252.1", "utun12 inet 198.18.0.1", "utun12 inet6 fe80::1", "utun5 inet 10.7.0.2"]
+        precondition(PacketRoutingConfiguration.tcpCaptureInterfaces(family: "inet", excluding: "utun9", liveAddresses: snapshot, defaultRouteInterface: "utun12") == ["utun12", "utun5"])
+        precondition(PacketRoutingConfiguration.tcpCaptureInterfaces(family: "inet", excluding: "utun9", liveAddresses: snapshot, defaultRouteInterface: "en0") == ["! lo0"])
+        precondition(PacketRoutingConfiguration.tcpCaptureInterfaces(family: "inet6", excluding: "utun9", liveAddresses: snapshot, defaultRouteInterface: nil) == ["! lo0"])
+        let vpnBypass = [
+            PacketBypassEndpoint(family: "inet", proto: "tcp", address: "193.108.57.4", port: 443),
+            PacketBypassEndpoint(family: "inet", proto: "udp", address: "198.51.100.10", port: 51820),
+            PacketBypassEndpoint(family: "inet6", proto: "tcp", address: "2001:db8::1", port: nil)
+        ]
+        let vpnScopedFilter = PacketRoutingConfiguration.filter(
+            owner: 501, interface: "utun9", capturesTCP: true,
+            tcpCaptureInterfacesV4: ["utun12"], tcpCaptureInterfacesV6: ["! lo0"],
+            bypassEndpoints: vpnBypass
+        )
+        precondition(vpnScopedFilter.contains("pass out quick on utun12 route-to (utun9 172.31.252.2) inet proto tcp"))
+        precondition(!vpnScopedFilter.contains("pass out quick on ! lo0 route-to (utun9 172.31.252.2) inet proto tcp"))
+        precondition(vpnScopedFilter.contains("pass out quick on ! lo0 route-to (utun9 172.31.252.2) inet proto udp"))
+        precondition(!vpnScopedFilter.contains("193.108.57.4")) // IPv4 TCP bypass not needed when en0 IPv4 TCP is uncaptured
+        precondition(vpnScopedFilter.contains("pass out quick on ! lo0 inet proto udp from any to 198.51.100.10 port 51820 user = 501 no state"))
+        precondition(vpnScopedFilter.contains("pass out quick on ! lo0 inet6 proto tcp from any to 2001:db8::1 user = 501 no state"))
+        let secondaryVPNFilter = PacketRoutingConfiguration.filter(
+            owner: 501, interface: "utun9", capturesTCP: true,
+            tcpCaptureInterfacesV4: ["! lo0"], tcpCaptureInterfacesV6: ["! lo0"],
+            bypassEndpoints: vpnBypass
+        )
+        precondition(secondaryVPNFilter.contains("pass out quick on ! lo0 inet proto tcp from any to 193.108.57.4 port 443 user = 501 no state"))
+        let fallbackWithBypass = PacketRoutingConfiguration.filter(
+            owner: 501, interface: nil, capturesTCP: true, bypassEndpoints: vpnBypass
+        )
+        precondition(!fallbackWithBypass.contains("193.108.57.4") && !fallbackWithBypass.contains("pass "))
+        for filter in [blockFilter, groupFilter, udpFallback, groupFallback, vpnScopedFilter, secondaryVPNFilter, fallbackWithBypass] {
             try checkPacketFilterExpansion(filter)
         }
         checkDefaultNetworkDetection()
@@ -310,7 +341,95 @@ struct Check {
         precondition(wireGuard.endpoint["system"] as? Bool == false)
         precondition(wireGuard.endpoint["bind_interface"] as? String == "en0")
         precondition((try? WireGuardProfile(contents: profile + "\nPostUp = unexpected", tag: "invalid", interface: "en0")) == nil)
+        try checkCommandDoesNotLeakFDs()
+        try checkDiagnosticLogging()
         print("Route checks passed.")
+    }
+
+    static func checkDiagnosticLogging() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("splitlane-log-test-\(UUID().uuidString)", isDirectory: true)
+        let logDir = root.appendingPathComponent("logs", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let beforeFDs = SplitLaneLog.openFDCount()
+        for i in 0..<40 {
+            SplitLaneLog.write(level: .info, component: "test", message: "line \(i)\nsecond",
+                               stream: .app, baseDirectory: logDir, maxBytes: 100_000)
+        }
+        let afterFDs = SplitLaneLog.openFDCount()
+        precondition(afterFDs <= beforeFDs + 2, "SplitLaneLog leaked FDs: before=\(beforeFDs) after=\(afterFDs)")
+
+        let logFile = SplitLaneLog.fileURL(for: .app, baseDirectory: logDir)
+        let content = try String(contentsOf: logFile, encoding: .utf8)
+        precondition(content.contains("[INFO] [test] line 0 | second"))
+        precondition(content.contains("[INFO] [test] line 39 | second"))
+
+        // Verify rotation when maxBytes is exceeded.
+        SplitLaneLog.write(level: .warning, component: "test", message: "rotated-entry",
+                           stream: .app, baseDirectory: logDir, maxBytes: 128)
+        let rotated = logFile.path + ".1"
+        precondition(FileManager.default.fileExists(atPath: rotated))
+        let fresh = try String(contentsOf: logFile, encoding: .utf8)
+        precondition(fresh.contains("[WARN] [test] rotated-entry") && !fresh.contains("line 0"))
+
+        // Verify symlink refusal (O_NOFOLLOW).
+        let decoy = root.appendingPathComponent("decoy.txt")
+        try "untouched".write(to: decoy, atomically: true, encoding: .utf8)
+        let linkedLog = SplitLaneLog.fileURL(for: .proxyEngine, baseDirectory: logDir)
+        try FileManager.default.createSymbolicLink(at: linkedLog, withDestinationURL: decoy)
+        SplitLaneLog.write(level: .error, component: "test", message: "should-not-follow",
+                           stream: .proxyEngine, baseDirectory: logDir, maxBytes: 100_000)
+        let decoyText = try String(contentsOf: decoy, encoding: .utf8)
+        precondition(decoyText == "untouched")
+
+        // Verify openAppendHandle redirects child process output cleanly.
+        try FileManager.default.removeItem(at: linkedLog)
+        let handle = SplitLaneLog.openAppendHandle(for: .proxyEngine, baseDirectory: logDir, maxBytes: 100_000)
+        precondition(handle != nil)
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sh")
+        proc.arguments = ["-c", "echo engine-out; echo engine-err >&2"]
+        proc.standardOutput = handle
+        proc.standardError = handle
+        try proc.run()
+        try? handle?.close()
+        proc.waitUntilExit()
+        let engineContent = try String(contentsOf: linkedLog, encoding: .utf8)
+        precondition(engineContent.contains("engine-out") && engineContent.contains("engine-err"))
+
+        // Verify in-place truncation keeps an active O_APPEND writer working without losing its inode.
+        let writer = SplitLaneLog.openAppendHandle(for: .proxyEngine, baseDirectory: logDir, maxBytes: 100_000)
+        precondition(writer != nil)
+        try writer?.write(contentsOf: Data(repeating: UInt8(ascii: "x"), count: 256))
+        SplitLaneLog.truncateIfOversized(for: .proxyEngine, baseDirectory: logDir, maxBytes: 128)
+        try writer?.write(contentsOf: Data("after-truncate\n".utf8))
+        try? writer?.close()
+        let truncatedContent = try String(contentsOf: linkedLog, encoding: .utf8)
+        precondition(truncatedContent.contains("Truncated oversized proxy-engine.log") &&
+                     truncatedContent.contains("after-truncate") &&
+                     !truncatedContent.contains(String(repeating: "x", count: 64)))
+
+        // Verify clearUserLogs truncates active logs in place (preserving open append writers) and removes backups.
+        let clearWriter = SplitLaneLog.openAppendHandle(for: .proxyEngine, baseDirectory: logDir, maxBytes: 100_000)
+        precondition(clearWriter != nil)
+        SplitLaneLog.clearUserLogs(baseDirectory: logDir)
+        precondition(!FileManager.default.fileExists(atPath: rotated))
+        try clearWriter?.write(contentsOf: Data("post-clear\n".utf8))
+        try? clearWriter?.close()
+        let postClear = try String(contentsOf: linkedLog, encoding: .utf8)
+        precondition(postClear == "post-clear\n")
+    }
+
+    static func checkCommandDoesNotLeakFDs() throws {
+        let before = (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count) ?? 0
+        for _ in 0..<40 {
+            let output = try runCommand("/bin/echo", ["ok"])
+            precondition(output == "ok\n")
+        }
+        let after = (try? FileManager.default.contentsOfDirectory(atPath: "/dev/fd").count) ?? 0
+        precondition(after <= before + 2, "runCommand leaked file descriptors: before=\(before) after=\(after)")
     }
 
     static func checkPacketFilterExpansion(_ filter: String) throws {

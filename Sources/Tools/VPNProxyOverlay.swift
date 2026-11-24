@@ -33,6 +33,7 @@ struct VPNProxyOverlay {
             if let previous { _ = SCDynamicStoreAddValue(session, key, previous as CFDictionary) }
             throw Self.failure("Не удалось включить временный прокси VPN.")
         }
+        SplitLaneLog.info("vpn", "Installed temporary proxy on VPN service=\(service) port=\(port)")
         entries.append(Entry(key: key, previous: previous, installed: installed, session: session))
     }
 
@@ -50,6 +51,7 @@ struct VPNProxyOverlay {
                               SCDynamicStoreSetValue(publisher, entry.key, restored as CFDictionary) else {
                             throw Self.failure("Не удалось восстановить временные настройки VPN.")
                         }
+                        SplitLaneLog.info("vpn", "Restored VPN proxy key=\(entry.key)")
                     }
                 }
             }
